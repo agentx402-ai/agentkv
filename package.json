@@ -1,0 +1,40 @@
+{
+  "name": "agentkv",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Open-source clients for AgentKV — an agent-native, x402-paid, zero-knowledge encrypted key-value store. The wallet address is the namespace; no accounts or API keys.",
+  "author": "The AgentKV Authors <contact@agentx402.ai>",
+  "homepage": "https://github.com/agentx402-ai/agentkv#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentx402-ai/agentkv.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentx402-ai/agentkv/issues"
+  },
+  "workspaces": [
+    "core",
+    "client",
+    "cli"
+  ],
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks || true",
+    "build": "npm --workspace core run build && npm --workspace client run build && npm --workspace cli run build",
+    "typecheck": "npm --workspace core run typecheck && npm --workspace client run typecheck && npm --workspace cli run typecheck",
+    "pretest": "npm --workspace core run build && npm --workspace client run build",
+    "test": "npm --workspace core test && npm --workspace client test && npm --workspace cli test",
+    "pretest:coverage": "npm --workspace core run build && npm --workspace client run build",
+    "test:coverage": "npm --workspace core run test:coverage && npm --workspace client run test:coverage && npm --workspace cli run test:coverage",
+    "lint": "biome ci .",
+    "format": "biome check --write ."
+  },
+  "overrides": {
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
+    "@vitest/coverage-v8": "^4.1.9"
+  }
+}

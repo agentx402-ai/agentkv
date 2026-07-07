@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "agentkv": {
+      "command": "npx",
+      "args": ["-y", "@agentkv/cli", "mcp"],
+      "env": {
+        "AGENTKV_ENDPOINT": "${user_config.endpoint}",
+        "AGENTKV_PRIVATE_KEY": "${user_config.private_key:-}",
+        "AGENTKV_NETWORK": "${user_config.network:-eip155:8453}",
+        "AGENTKV_ENCRYPTION_KEY": "${user_config.encryption_key:-}",
+        "AGENTKV_MAX_SPEND_USD": "${user_config.max_spend_usd:-}",
+        "AGENTKV_MAX_SESSION_SPEND_USD": "${user_config.max_session_spend_usd:-}"
+      }
+    }
+  }
+}

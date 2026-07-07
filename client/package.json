@@ -1,0 +1,76 @@
+{
+  "name": "@agentkv/client",
+  "version": "0.1.0",
+  "description": "AgentKV client SDK: zero-knowledge encryption + x402/EIP-712 signing for the agent-native, pay-per-request KV store",
+  "license": "MIT",
+  "author": "The AgentKV Authors <contact@agentx402.ai>",
+  "homepage": "https://github.com/agentx402-ai/agentkv#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentx402-ai/agentkv.git",
+    "directory": "client"
+  },
+  "bugs": {
+    "url": "https://github.com/agentx402-ai/agentkv/issues"
+  },
+  "keywords": [
+    "agentkv",
+    "x402",
+    "key-value",
+    "kv-store",
+    "encrypted",
+    "zero-knowledge",
+    "usdc",
+    "agent",
+    "sdk",
+    "eip-3009",
+    "eip-712",
+    "viem"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "tsc --noEmit && vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentx402/core": "^0.1.0",
+    "@noble/hashes": "^1.4.0",
+    "@x402/core": "^2.16.0",
+    "@x402/evm": "^2.16.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

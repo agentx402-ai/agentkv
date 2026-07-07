@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+.vitest/
+
+# Generated (graphify knowledge graph): regenerable via `graphify update .`.
+# Kept out of this public repo; regenerate locally as needed.
+graphify-out
+
+# Local code-review scratch (workflow output + report)
+.review/
+
+# Local dev tooling / pack artifacts
+.impeccable/
+.agents/
+.claude/
+skills-lock.json
+docs/
+*.tgz
+
+# editor / OS
+.DS_Store
+*.log
+npm-debug.log*
+
+# Ad-hoc stress / verification / probe scripts — kept out of the published library
+# and CI (real tests live in core/, client/, and cli/).
+/scripts/
+/STRESS.md
+/stress.mjs
+/stress-mp.mjs
+/access-methods-check.mjs
+/account-topoff-check.mjs
+/real-settle-check.mjs
+/test-account-e2e.mjs
+/test-account-integration.mjs
+/test-deploy.mjs

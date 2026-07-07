@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Pre-push: run the same lint CI runs (biome via `npm run lint`) so a lint failure is caught
+# HERE — before the push reaches CI — not after. It's fast (~0.1s). Bypass with `--no-verify`.
+set -euo pipefail
+
+# Only lint when the biome CLI is installed (skip cleanly on a fresh clone before `npm install`).
+if [ ! -x node_modules/.bin/biome ]; then
+  echo "pre-push: biome not installed (run 'npm install'); skipping lint." >&2
+  exit 0
+fi
+
+echo "pre-push: running biome lint (npm run lint)…" >&2
+npm run --silent lint
