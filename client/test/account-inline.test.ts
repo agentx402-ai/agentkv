@@ -25,6 +25,48 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 
 const INSUFFICIENT = { error: "insufficient credits", code: "insufficient_credits" };
 
+describe("account-key inline branch honors spend caps", () => {
+  it("hands the hook maxAmountAtomic = the configured maxSpendUsd, not the default ceiling", async () => {
+    const seen: number[] = [];
+    const inline = vi.fn(async (req: any) => {
+      seen.push(req.maxAmountAtomic);
+      return { status: 200, body: JSON.stringify({ ok: true }), headers: {} };
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json(402, INSUFFICIENT)),
+    );
+    const kv = new AgentKV({
+      accountKey: AK,
+      encryptionKey: ENC,
+      endpoint,
+      maxSpendUsd: 0.01,
+      opInlinePayer: inline as any,
+    });
+    await kv.set("k", { a: 1 });
+    // Before the fix this was hard-coded to the $0.05 default ceiling (50000), ignoring the cap.
+    expect(seen).toEqual([Math.round(0.01 * 1_000_000)]);
+  });
+
+  it("refuses the inline op (before paying) when the session cap can't cover the per-op ceiling", async () => {
+    const inline = vi.fn(noopInline);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json(402, INSUFFICIENT)),
+    );
+    const kv = new AgentKV({
+      accountKey: AK,
+      encryptionKey: ENC,
+      endpoint,
+      maxSpendUsd: 0.02,
+      maxSessionSpendUsd: 0.01, // less than the per-op ceiling -> pre-reservation must fail
+      opInlinePayer: inline as any,
+    });
+    await expect(kv.set("k", { a: 1 })).rejects.toThrow(/session cap/);
+    expect(inline).not.toHaveBeenCalled();
+  });
+});
+
 describe("opInlinePayer constructor validation", () => {
   it("rejects opInlinePayer in wallet mode (account-key only)", () => {
     expect(

@@ -2,8 +2,7 @@
 //
 // Pays `${endpoint}/account/deposit` with `npx awal x402 pay` (argv array via
 // execFile — NEVER a shell string), authorized by the account's ak_ bearer.
-// Security invariants (see docs/design/2026-07-04-account-key-auto-topoff-design.md):
-// strict input validation before spawn, --max-amount always passed, the bearer
+// Security invariants: strict input validation before spawn, --max-amount always passed, the bearer
 // never logged and REDACTED from every error (execFile errors embed the argv).
 import { execFile } from "node:child_process";
 import type { TopoffPayerRequest } from "@agentkv/client";

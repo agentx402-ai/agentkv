@@ -56,8 +56,8 @@ export function deriveKey(privateKey: `0x${string}`): Uint8Array {
  */
 export interface KeyMaterial {
   value: Uint8Array; // AES key for values (kdf_id=1)
-  keyName: Uint8Array; // AES key for the encrypted key-name (reserved, not yet wired)
-  mac: Uint8Array; // HMAC key for the blind-index digest (reserved, not yet wired)
+  keyName: Uint8Array; // AES key for the encrypted key-name
+  mac: Uint8Array; // HMAC key for the blind-index digest
   legacyValue: Uint8Array; // decrypt no-magic legacy blobs only
 }
 
@@ -75,8 +75,8 @@ export function deriveKeyMaterial(ikm: Uint8Array, explicit = false): KeyMateria
  * Blind-index digest for a key NAME: `scheme_tag ‖ HMAC-SHA256(macKey, NFC(name))`,
  * url-safe-base64. Deterministic and per-wallet (macKey is per-wallet), so the server
  * looks up by an opaque token it cannot invert or correlate across wallets. NFC is the
- * frozen normalization (case-sensitive, whitespace-preserving). NOT yet wired
- * into the request path yet; exported for future use + tests.
+ * frozen normalization (case-sensitive, whitespace-preserving). Used by set/get/delete/list
+ * to look a value up under an opaque per-wallet token the server cannot invert.
  */
 export function hashKey(macKey: Uint8Array, name: string): string {
   const mac = hmac(sha256, macKey, utf8(name.normalize("NFC")));

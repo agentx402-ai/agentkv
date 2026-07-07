@@ -2,7 +2,6 @@
 //
 // Account-key auto top-off: constructor validation, reactive hard-402 top-off,
 // proactive watermark top-off, spend accounting.
-// See docs/design/2026-07-04-account-key-auto-topoff-design.md.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentKV } from "../src/index";
 

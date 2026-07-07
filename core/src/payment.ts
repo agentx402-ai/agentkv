@@ -27,6 +27,13 @@ export const EIP712_DOMAIN_NAME = "AgentKV";
 /** EIP-712 domain version shared with the server's EIP-712 verifier. */
 export const EIP712_DOMAIN_VERSION = "1";
 
+/**
+ * Hard cap on the signed EIP-3009 authorization window, regardless of the server-supplied
+ * `maxTimeoutSeconds`. A signed authorization is a bearer instrument; a hostile challenge
+ * asking for a multi-year window must not yield one that stays spendable indefinitely.
+ */
+export const MAX_AUTH_WINDOW_SEC = 3600;
+
 /** Maps a CAIP-2 network id (e.g. "eip155:8453") to its numeric chainId. */
 export function chainIdFromCaip2(network: string): number {
   const parts = network.split(":");
@@ -195,7 +202,13 @@ export function challengePriceUsd(
 export async function buildPaymentHeader(
   account: Signer,
   paymentRequiredHeader: string,
-  opts?: { nonce?: `0x${string}`; amountAtomic?: number; expectedNetwork?: string },
+  opts?: {
+    nonce?: `0x${string}`;
+    amountAtomic?: number;
+    expectedNetwork?: string;
+    /** Pin the recipient: reject the challenge unless its `payTo` equals this address (high-value ops). */
+    expectedPayTo?: string;
+  },
 ): Promise<string> {
   const { x402Version, accepts } = decodeChallenge(paymentRequiredHeader);
 
@@ -204,6 +217,15 @@ export async function buildPaymentHeader(
   // Pin the money-moving challenge to the client's configured network + canonical asset
   // BEFORE signing anything (a signed EIP-3009 authorization is a bearer instrument).
   if (opts?.expectedNetwork) assertNetworkParity(req, opts.expectedNetwork);
+  // Optional recipient pin: the client can't know the "correct" payTo in general (the amount
+  // ceiling is the primary defense), but for high-value ops a caller may pin an expected one.
+  if (opts?.expectedPayTo && getAddress(req.payTo) !== getAddress(opts.expectedPayTo)) {
+    throw new AgentXError(
+      `payment challenge payTo "${req.payTo}" does not match expected "${opts.expectedPayTo}"`,
+      "payto_mismatch",
+      0,
+    );
+  }
 
   const chainId = chainIdFromCaip2(req.network);
   // Look up EIP-712 domain info for the token (name/version).
@@ -212,7 +234,10 @@ export async function buildPaymentHeader(
 
   const nonce = opts?.nonce ?? freshNonce();
   const now = nowSec();
-  const validBefore = String(now + (req.maxTimeoutSeconds ?? 300));
+  // Clamp the signed window: never sign an authorization valid longer than MAX_AUTH_WINDOW_SEC,
+  // regardless of the server-supplied maxTimeoutSeconds.
+  const window = Math.min(req.maxTimeoutSeconds ?? 300, MAX_AUTH_WINDOW_SEC);
+  const validBefore = String(now + window);
 
   const authorization = {
     from: getAddress(account.address),

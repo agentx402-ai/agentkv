@@ -3,7 +3,6 @@
 // Cross-platform helpers for storing/using a secret WITHOUT the plaintext passing
 // through the model context. The read helpers (readEnvSecret / readFileSecret) are
 // shared by the MCP tools and the CLI so the guards stay identical on both surfaces.
-// See docs/design/2026-06-28-llm-free-secret-tools.md.
 import { spawn } from "node:child_process";
 import {
   closeSync,
@@ -27,18 +26,36 @@ export const MAX_SECRET_BYTES = 1024 * 1024;
 // Env vars that hold key material the model must never see. Stripped from the MCP
 // server's own env at startup (scrubSensitiveEnv) AND refused as a secret SOURCE, so
 // an agent can't read the wallet key back into a stored value via set_from_env.
-const SENSITIVE_ENV = ["AGENTKV_PRIVATE_KEY", "AGENTKV_ENCRYPTION_KEY", "AGENTKV_ACCOUNT_KEY"];
+const SENSITIVE_ENV = [
+  "AGENTKV_PRIVATE_KEY",
+  "AGENTKV_ENCRYPTION_KEY",
+  "AGENTKV_ACCOUNT_KEY",
+  "AGENTKV_PAYER_KEY", // funded external-payer key (account fund / --from-key) — holds real USDC
+];
+// Defense in depth: any AGENTKV_ env var whose NAME looks like private/funded key material is
+// ALSO protected, so a future AGENTKV_*_PRIVATE_KEY / _PAYER_KEY var is covered by default
+// without a code change. Scoped to the AGENTKV_ prefix so it never refuses a user's UNRELATED
+// third-party secret (storing those via set_from_env is the whole point of the tool).
+const SENSITIVE_ENV_PATTERN =
+  /^AGENTKV_.*(PRIVATE_KEY|PAYER_KEY|ENCRYPTION_KEY|MNEMONIC|SEED_PHRASE)$/i;
 
-/** Delete the wallet/encryption key from `env` once the client has captured them. */
+/** True if an env var name holds AgentKV's own protected key material (explicit list or pattern). */
+export function isSensitiveEnvName(name: string): boolean {
+  return SENSITIVE_ENV.includes(name) || SENSITIVE_ENV_PATTERN.test(name);
+}
+
+/** Delete every protected key var from `env` once the client has captured what it needs. */
 export function scrubSensitiveEnv(env: NodeJS.ProcessEnv = process.env): void {
-  for (const k of SENSITIVE_ENV) delete env[k];
+  for (const k of Object.keys(env)) {
+    if (isSensitiveEnvName(k)) delete env[k];
+  }
 }
 
 export type SecretRead = { ok: true; value: string } | { ok: false; error: string; code: string };
 
 /** Read a secret from a local env var. Refuses protected key material and unset/empty. */
 export function readEnvSecret(envVar: string): SecretRead {
-  if (SENSITIVE_ENV.includes(envVar)) {
+  if (isSensitiveEnvName(envVar)) {
     return {
       ok: false,
       error: `refusing to read protected key material from ${envVar}`,
@@ -204,7 +221,9 @@ export function runWithSecret(opts: {
     // The MCP server holds the wallet/encryption key in its own env; strip it so the
     // agent-controlled command can't read and exfiltrate it (least-privilege).
     const inherited = { ...process.env };
-    for (const k of SENSITIVE_ENV) inherited[k] = undefined;
+    for (const k of Object.keys(inherited)) {
+      if (isSensitiveEnvName(k)) inherited[k] = undefined;
+    }
     const child = spawn(opts.command, opts.args ?? [], {
       cwd: opts.cwd,
       env: { ...inherited, ...opts.extraEnv, [opts.envVar]: opts.secret },

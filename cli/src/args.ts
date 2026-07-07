@@ -10,6 +10,29 @@ export class UsageError extends Error {
   }
 }
 
+// Every long flag the CLI accepts, across all commands. An unknown flag is rejected
+// (fail-closed) rather than silently swallowed — a typo like `--max-spend-us 5` must not
+// slip through as a no-op and leave a spend cap unset on real funds.
+const KNOWN_FLAGS = new Set([
+  "endpoint",
+  "network",
+  "max-spend-usd",
+  "ttl-days",
+  "strict-ttl",
+  "pretty",
+  "json",
+  "reveal",
+  "out",
+  "file",
+  "from-key",
+  "from-env",
+  "cursor",
+  "limit",
+  "idempotency-key",
+  "onramp-app-id",
+  "onramp-provider",
+]);
+
 export function parseFlags(args: string[]): { flags: Record<string, any>; positionals: string[] } {
   const flags: Record<string, any> = {};
   const positionals: string[] = [];
@@ -17,6 +40,9 @@ export function parseFlags(args: string[]): { flags: Record<string, any>; positi
     const a = args[i];
     if (a.startsWith("--")) {
       const key = a.slice(2);
+      if (!KNOWN_FLAGS.has(key)) {
+        throw new UsageError(`unknown flag --${key}`);
+      }
       const boolish = ["strict-ttl", "pretty", "json", "reveal"].includes(key);
       const val = boolish ? true : args[++i];
       // A value-expecting flag MUST get a real value. Missing (`--out` at end),

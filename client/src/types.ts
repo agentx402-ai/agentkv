@@ -83,6 +83,10 @@ interface AgentKVCommon {
    * Kept small so a re-sent paid authorization stays within validBefore. Set 0 to disable.
    */
   retries?: number;
+  /** Per-attempt request timeout in ms (aborts a hung-open connection so an op can't wedge forever). Default 30000. Pass 0 to disable. */
+  timeoutMs?: number;
+  /** Injectable `fetch` for proxies / instrumentation / testing. Defaults to the global `fetch`. */
+  fetch?: typeof fetch;
   /** Opt-in Discounted Prepay. When set, the client keeps a credit balance topped up. */
   prepay?: {
     /** Top off when the tracked balance (USD) falls below this. */

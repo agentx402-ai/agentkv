@@ -160,17 +160,33 @@ describe("runCli unknown command", () => {
     expect(e.hint).toMatch(/set/);
   });
 
-  it("empty argv → EXIT.USAGE + unknown-command message", async () => {
-    const io = makeIo();
+  it("empty argv → EXIT.OK + prints help to stdout", async () => {
+    const out: string[] = [];
     const code = await runCli([], {
+      client: fakeClient() as any,
+      stdout: (s) => out.push(s),
+      stderr: () => {},
+    });
+    expect(code).toBe(0); // EXIT.OK — bare `agentkv` shows usage, doesn't error
+    expect(out.join("")).toMatch(/Usage: agentkv/);
+  });
+
+  it("--version → EXIT.OK + a semver on stdout", async () => {
+    const out: string[] = [];
+    const code = await runCli(["--version"], { stdout: (s) => out.push(s), stderr: () => {} });
+    expect(code).toBe(0);
+    expect(out.join("").trim()).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("rejects an unknown flag with EXIT.USAGE (fail-closed, not silently swallowed)", async () => {
+    const io = makeIo();
+    const code = await runCli(["set", "k", "{}", "--bogus", "x"], {
       client: fakeClient() as any,
       stdout: io.stdout,
       stderr: io.stderr,
     });
-    expect(code).toBe(2);
-    const e = io.errJson();
-    expect(e.code).toBe("usage");
-    expect(e.error).toMatch(/unknown command/);
+    expect(code).toBe(2); // EXIT.USAGE
+    expect(io.errJson().error).toMatch(/unknown flag/);
   });
 
   it("unknown command writes nothing to stdout", async () => {
@@ -253,7 +269,7 @@ describe("runCli mapError — async sub-command rejections map to exit codes", (
     expect(io.errJson().code).toBe("not_found");
   });
 
-  it("AgentKVError(402) from deposit() → EXIT.GENERIC (1) (non-404 AgentKVError)", async () => {
+  it("AgentKVError(402) from deposit() → EXIT.PAYMENT (3) (out-of-funds is a payment failure)", async () => {
     const client = fakeClient({
       deposit: vi.fn(async () => {
         throw new AgentKVError("payment required", "payment_required", 402);
@@ -265,7 +281,7 @@ describe("runCli mapError — async sub-command rejections map to exit codes", (
       stdout: io.stdout,
       stderr: io.stderr,
     });
-    expect(code).toBe(1); // EXIT.GENERIC
+    expect(code).toBe(3); // EXIT.PAYMENT — a real 402 maps to the payment exit code, not generic
     expect(io.errJson().code).toBe("payment_required");
   });
 

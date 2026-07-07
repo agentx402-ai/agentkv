@@ -13,6 +13,7 @@ import {
   scrubSensitiveEnv,
   writeSecretFile,
 } from "./secrets.js";
+import { VERSION } from "./version.js";
 
 // Structured tool-error envelope, shared by every secret tool so the {error,code}
 // shape stays consistent — callers/models key on `code`.
@@ -53,7 +54,7 @@ export function buildMcpServer(
   // and agentkv_wallet_address reports account-key mode instead of the misleading sentinel.
   accountMode = false,
 ): McpServer {
-  const server = new McpServer({ name: "agentkv", version: "0.1.0" });
+  const server = new McpServer({ name: "agentkv", version: VERSION });
 
   server.tool(
     "agentkv_set",

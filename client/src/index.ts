@@ -40,7 +40,8 @@ import {
 } from "./types";
 
 export { generateAccountKey, isAccountKeyFormat } from "./account";
-export { decrypt, deriveKey, encrypt } from "./crypto";
+export type { KeyMaterial } from "./crypto";
+export { decrypt, deriveKey, deriveKeyMaterial, encrypt, hashKey } from "./crypto";
 export type {
   AgentKVOptions,
   DeleteResult,
@@ -138,6 +139,8 @@ export class AgentKV {
   readonly maxSessionSpendUsd?: number;
   /** Bounded internal retries on transient failures (network error / 5xx). */
   readonly maxRetries: number;
+  private readonly timeoutMs?: number;
+  private readonly fetchImpl?: typeof fetch;
   private _ikm?: Uint8Array;
   private _explicitKey = false;
   private _km?: KeyMaterial;
@@ -171,6 +174,8 @@ export class AgentKV {
     this.maxSpendUsd = opts.maxSpendUsd;
     this.maxSessionSpendUsd = opts.maxSessionSpendUsd;
     this.maxRetries = Math.max(0, Math.floor(opts.retries ?? 2));
+    this.timeoutMs = opts.timeoutMs;
+    this.fetchImpl = opts.fetch;
 
     // Step 4a: validate prepay at construction (fail fast, not after a round-trip).
     const isAccountMode = "accountKey" in opts && opts.accountKey != null;
@@ -429,6 +434,15 @@ export class AgentKV {
   }
 
   /**
+   * The effective per-op ceiling (USD) for an inline-payer op: the caller's `maxSpendUsd`
+   * when set (they opted into that bound), else the built-in default ceiling. Handed to the
+   * hook as its hard `maxAmountAtomic`, and pre-reserved against the session cap before paying.
+   */
+  private inlineOpCeilingUsd(): number {
+    return this.maxSpendUsd ?? DEFAULT_MAX_OP_USD;
+  }
+
+  /**
    * The on-chain settlement txHash from a response's PAYMENT-RESPONSE header, or ""
    * when the server served the op from existing credits (so the attached top-off
    * authorization was NEVER settled — it just expires) or the header is absent. The
@@ -478,7 +492,10 @@ export class AgentKV {
     url: string,
     build: () => RequestInit | Promise<RequestInit>,
   ): Promise<Response> {
-    return fetchWithRetry(url, build, this.maxRetries);
+    return fetchWithRetry(url, build, this.maxRetries, {
+      timeoutMs: this.timeoutMs,
+      fetchImpl: this.fetchImpl,
+    });
   }
 
   // --- Discounted Prepay helpers -------------------------------------------
@@ -788,6 +805,12 @@ export class AgentKV {
         // when no topoffPayer is configured at all, so the two hooks can never
         // both act on the same op (see client/README.md precedence).
         if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
+          // Bound the inline hook by the caller's configured per-op cap (or the built-in
+          // ceiling), and pre-reserve it against the session cap BEFORE paying — the
+          // credit-cost pre-flight above only checked the $0.0005 credit price, so without
+          // this an inline op could settle real USDC above maxSpendUsd / the session cap.
+          const inlineCeilingUsd = this.inlineOpCeilingUsd();
+          this.assertSpend(inlineCeilingUsd);
           const inlineRes = await this.opInlinePayer({
             url,
             method: "POST",
@@ -797,11 +820,8 @@ export class AgentKV {
               "Idempotency-Key": idempotencyKey,
               ...buildBearerHeaders(this.accountKey!),
             },
-            // `topoffAtomic` is always 0 here (this branch only runs when
-            // `!this.topoffPayer`, and `topoffAtomic` is only ever nonzero when
-            // `topoffPayer` is configured) — the inline op pays at most the
-            // per-op ceiling.
-            maxAmountAtomic: Math.round(DEFAULT_MAX_OP_USD * 1_000_000),
+            // The hook MUST NOT settle more than the effective per-op ceiling.
+            maxAmountAtomic: Math.round(inlineCeilingUsd * 1_000_000),
           });
           if (inlineRes.status < 200 || inlineRes.status >= 300) {
             throw this.errorFromBody(inlineRes.status, inlineRes.body, "set failed");
@@ -1057,13 +1077,16 @@ export class AgentKV {
         // Inline opt-in: mirror of the set() branch above (see its comment for
         // the topoffPayer precedence rule).
         if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
+          // Bound by the caller's per-op cap and pre-reserve against the session cap
+          // before paying (see the set() inline branch for the rationale).
+          const inlineCeilingUsd = this.inlineOpCeilingUsd();
+          this.assertSpend(inlineCeilingUsd);
           const inlineRes = await this.opInlinePayer({
             url,
             method: "GET",
             headers: { ...idemHeaders, ...buildBearerHeaders(this.accountKey!) },
-            // See the set() inline branch above: `topoffAtomic` is always 0 here,
-            // so the inline op pays at most the per-op ceiling.
-            maxAmountAtomic: Math.round(DEFAULT_MAX_OP_USD * 1_000_000),
+            // The hook MUST NOT settle more than the effective per-op ceiling.
+            maxAmountAtomic: Math.round(inlineCeilingUsd * 1_000_000),
           });
           if (inlineRes.status === 404) return { value: null };
           if (inlineRes.status < 200 || inlineRes.status >= 300) {
@@ -1298,7 +1321,10 @@ export class AgentKV {
    * facilitator; the returned credits are then spendable by set/get with no
    * further payment.
    */
-  async deposit(amountUsd: number): Promise<DepositResult> {
+  async deposit(
+    amountUsd: number,
+    opts: { idempotencyKey?: string; expectedPayTo?: string } = {},
+  ): Promise<DepositResult> {
     // Public API always honors the per-op cap. The internal top-off path
     // (maybeAsyncTopoff) calls runDeposit() directly to bypass it — the bypass is
     // not part of the public surface, so a caller can't disable their own cap.
@@ -1334,11 +1360,11 @@ export class AgentKV {
     // settling (knownCredits stays stale-low until runDeposit refreshes it). If a top-off
     // is already in flight, or prepay is off, just run — no extra guard needed.
     if (!this.prepay || this.topoffInFlight) {
-      return this.runDeposit(amountUsd, {});
+      return this.runDeposit(amountUsd, opts);
     }
     this.topoffInFlight = true;
     try {
-      return await this.runDeposit(amountUsd, {});
+      return await this.runDeposit(amountUsd, opts);
     } finally {
       this.topoffInFlight = false;
     }
@@ -1402,7 +1428,7 @@ export class AgentKV {
 
   private async runDeposit(
     amountUsd: number,
-    opts: { bypassPerOpCap?: boolean },
+    opts: { bypassPerOpCap?: boolean; idempotencyKey?: string; expectedPayTo?: string },
   ): Promise<DepositResult> {
     // Account-key mode has NO signing wallet, so it cannot sign an x402 payment. This is
     // only reached when NO topoffPayer is configured — deposit() aliases to the payer
@@ -1435,7 +1461,9 @@ export class AgentKV {
     // settled-but-unacked deposit reuses the authorization and the server dedupes
     // (replaying the prior result, or rejecting the already-used authorization)
     // instead of settling + minting twice.
-    const opKey = freshNonce();
+    // Caller-supplied key makes a caller-level retry of a settled-but-unacked deposit safe
+    // (the pinned nonce dedupes server-side); else a fresh key per call.
+    const opKey = opts.idempotencyKey ?? freshNonce();
     const { url } = this.route({ legacy: "/credits/deposit" });
     // First request triggers a 402 challenge; then we sign the payment.
     let res = await this.fetchWithRetry(url, () => ({
@@ -1451,6 +1479,7 @@ export class AgentKV {
       const paymentSignature = await buildPaymentHeader(this.requireSigner(), challenge, {
         amountAtomic,
         expectedNetwork: this.network,
+        expectedPayTo: opts.expectedPayTo,
         nonce: nonceFromIdempotencyKey(opKey),
       });
       res = await this.fetchWithRetry(url, () => ({
@@ -1488,7 +1517,11 @@ export class AgentKV {
    * does not count toward session spend — the payer is an EXTERNAL wallet, not this
    * client's tracked budget. The local encryption key is never touched (funding does not encrypt).
    */
-  async fundAccount(signer: Signer | `0x${string}`, amountUsd: number): Promise<DepositResult> {
+  async fundAccount(
+    signer: Signer | `0x${string}`,
+    amountUsd: number,
+    opts: { idempotencyKey?: string; expectedPayTo?: string } = {},
+  ): Promise<DepositResult> {
     // Account-key mode ONLY. `fundAccount` funds a DECOUPLED account bearer; a
     // wallet-mode client's paying wallet already IS its namespace (use deposit()).
     if (!this.accountKey) {
@@ -1530,7 +1563,7 @@ export class AgentKV {
     // Stable per-deposit key reused across the challenge->pay retry; pin the EIP-3009
     // nonce to it so a transient retry of a settled-but-unacked deposit reuses the
     // authorization and the server dedupes (exactly-once) instead of settling twice.
-    const idempotencyKey = freshNonce();
+    const idempotencyKey = opts.idempotencyKey ?? freshNonce();
     const nonce = nonceFromIdempotencyKey(idempotencyKey);
 
     // 1) Bearer POST with NO payment -> 402 + a PAYMENT-REQUIRED challenge.
@@ -1548,6 +1581,7 @@ export class AgentKV {
       const paymentSignature = await buildPaymentHeader(payer, challenge, {
         amountAtomic,
         expectedNetwork: this.network,
+        expectedPayTo: opts.expectedPayTo,
         nonce,
       });
       res = await this.fetchWithRetry(url, () => ({

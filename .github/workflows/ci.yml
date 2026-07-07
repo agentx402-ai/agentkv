@@ -83,3 +83,21 @@ jobs:
             exit 1
           fi
           echo "ok: no internal references in tracked files"
+
+  versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Publishable package versions must match (coordinated release)
+        run: |
+          node -e '
+            const fs = require("fs");
+            const ver = (p) => JSON.parse(fs.readFileSync(p, "utf8")).version;
+            const v = { core: ver("core/package.json"), client: ver("client/package.json"), cli: ver("cli/package.json") };
+            const uniq = [...new Set(Object.values(v))];
+            if (uniq.length !== 1) { console.error("::error::publishable package versions diverge:", JSON.stringify(v)); process.exit(1); }
+            console.log("ok: core, client, cli all at " + uniq[0]);
+          '

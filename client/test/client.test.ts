@@ -138,7 +138,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     const plaintext = { secret: "do-not-leak", n: 7 };
     let capturedBody: any = null;
 
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       capturedBody = JSON.parse(init.body as string);
       return new Response(JSON.stringify({ ok: true, expires_at: "2026-09-22T00:00:00.000Z" }), {
         status: 200,
@@ -235,7 +235,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
 
   it("set passes ttl_days and strict_ttl", async () => {
     let capturedBody: any = null;
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       capturedBody = JSON.parse(init.body as string);
       return new Response(JSON.stringify({ ok: true, expires_at: "x" }), { status: 200 });
     });
@@ -253,7 +253,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     const { encrypt } = await import("../src/crypto");
     const ciphertext = await encrypt(key, JSON.stringify(original));
 
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       expect(init.method).toBe("GET");
       return new Response(
         JSON.stringify({
@@ -348,7 +348,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
   });
 
   it("delete sends EIP-712 identity headers and returns ok", async () => {
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       expect(init.method).toBe("DELETE");
       const h = new Headers(init.headers);
       expect(h.get("X-AgentKV-Signature")).toMatch(/^0x[0-9a-fA-F]+$/);
@@ -381,7 +381,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     );
 
     let attempt = 0;
-    mockFetch((url, init) => {
+    mockFetch((_url, _init) => {
       attempt++;
       if (attempt === 1) {
         return new Response(
@@ -407,7 +407,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
   });
 
   it("set tries the credit path first: identity signature, no payment, on a 200", async () => {
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       const h = new Headers(init.headers);
       // Credit path: the first attempt carries an EIP-712 identity signature and
       // NO payment, so the server can spend pre-paid credits.
@@ -426,7 +426,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     const key = deriveKeyMaterial(hexToBytes(PK_A)).value; // primary value key, not legacy
     const { encrypt } = await import("../src/crypto");
     const ciphertext = await encrypt(key, JSON.stringify({ ok: 1 }));
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       const h = new Headers(init.headers);
       expect(init.method).toBe("GET");
       expect(h.get("X-AgentKV-Signature")).toMatch(/^0x[0-9a-fA-F]+$/);
@@ -468,7 +468,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
       }),
     );
     let attempt = 0;
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       attempt++;
       const h = new Headers(init.headers);
       if (attempt === 1) {
@@ -515,7 +515,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     );
     const idemHeaders: (string | null)[] = [];
     const paymentNonces: string[] = [];
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       const h = new Headers(init.headers);
       const paySig = h.get("PAYMENT-SIGNATURE");
       if (paySig) {
@@ -567,7 +567,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     );
     let attempt = 0;
     let paidAmount: string | null = null;
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       attempt++;
       const h = new Headers(init.headers);
       if (attempt === 1) {
@@ -613,7 +613,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
 
     const idemHeaders: (string | null)[] = [];
     const paymentNonces: string[] = [];
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       const h = new Headers(init.headers);
       const paySig = h.get("PAYMENT-SIGNATURE");
       if (paySig) {

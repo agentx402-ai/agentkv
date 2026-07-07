@@ -11,6 +11,7 @@ import { runWallet } from "./commands/wallet";
 import { clientFromConfig, readConfigFile, resolveConfig } from "./config";
 import { agentkvDir } from "./keystore";
 import { EXIT, printError, printJson, type Writer } from "./output";
+import { VERSION } from "./version.js";
 
 export interface Deps {
   client?: any;
@@ -21,10 +22,46 @@ export interface Deps {
 
 export { parseFlags } from "./args";
 
+const HELP = `agentkv — encrypted, x402-paid key-value store (v${VERSION})
+
+Usage: agentkv <command> [options]
+
+Commands:
+  set <key> <json>        Encrypt and store a value
+  get <key>               Fetch and decrypt a value
+  delete <key>            Delete a value
+  list-keys               List stored key names
+  balance                 Show prepaid credit balance
+  deposit <usd>           Buy credits (>= $1) with USDC via x402
+  wallet new|show         Manage the local signing wallet
+  account new|show|fund   Manage an account-key (ak_) namespace
+  fund                    Print a card->USDC onramp URL
+  config                  Read/write local defaults
+  mcp                     Run the MCP server (stdio)
+
+Global options:
+  --endpoint <url>        API endpoint (default https://api.agentx402.ai)
+  --network <caip2>       eip155:8453 (default) or eip155:84532
+  --max-spend-usd <n>     Per-operation spend cap (USD)
+  --json | --pretty       Output format
+  -h, --help              Show this help
+  -V, --version           Show the CLI version
+
+Docs: https://github.com/agentx402-ai/agentkv
+`;
+
 export async function runCli(argv: string[], deps: Deps = {}): Promise<number> {
   const stdout = deps.stdout ?? ((s) => process.stdout.write(s));
   const stderr = deps.stderr ?? ((s) => process.stderr.write(s));
   const [cmd, ...rest] = argv;
+  if (cmd === undefined || cmd === "-h" || cmd === "--help" || cmd === "help") {
+    stdout(HELP);
+    return EXIT.OK;
+  }
+  if (cmd === "-V" || cmd === "--version" || cmd === "version") {
+    stdout(`${VERSION}\n`);
+    return EXIT.OK;
+  }
   try {
     const env = deps.env ?? process.env;
     if (cmd === "wallet") return runWallet(rest, { stdout, stderr, env });
@@ -56,7 +93,7 @@ export async function runCli(argv: string[], deps: Deps = {}): Promise<number> {
         stderr,
         "usage",
         `unknown command: ${cmd ?? "(none)"}`,
-        "commands: set get delete list-keys deposit balance wallet account fund config mcp",
+        "commands: set get delete list-keys deposit balance wallet account fund config mcp (run `agentkv --help`)",
       );
       return EXIT.USAGE;
     }
@@ -87,7 +124,9 @@ function mapError(e: unknown, stderr: Writer): number {
   }
   if (e instanceof AgentKVError) {
     printError(stderr, e.code, e.message);
-    return e.status === 404 ? EXIT.NOT_FOUND : EXIT.GENERIC;
+    if (e.status === 404) return EXIT.NOT_FOUND;
+    if (e.status === 402) return EXIT.PAYMENT; // a real out-of-funds 402 -> the payment exit code
+    return EXIT.GENERIC;
   }
   // A usage/argument error (bad flag) is a distinct exit code from a runtime failure.
   if (e instanceof UsageError) {

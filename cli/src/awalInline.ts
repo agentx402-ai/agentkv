@@ -2,10 +2,9 @@
 //
 // Routes a WHOLE account-key set()/get() op through `awal x402 pay -X <method> ...
 // <url>` (argv array via execFile — NEVER a shell string): awal drives its OWN
-// 402->pay->retry against the worker (verified live in C0,
-// docs/design/2026-07-04-awal-transport-verification.md) and this hook hands the
-// SDK back the final response for it to parse/decrypt as usual (see C1,
-// client/src/index.ts account-key set()/get() inline branches).
+// 402->pay->retry against the backend and this hook hands the SDK back the final
+// response for it to parse/decrypt as usual (see client/src/index.ts account-key
+// set()/get() inline branches).
 //
 // Security invariants mirror cli/src/awal.ts: strict input validation BEFORE spawn
 // (the subprocess boundary is where injection would bite), the bearer never

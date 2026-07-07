@@ -153,7 +153,7 @@ describe("prepay: constructor validation (Step 4a)", () => {
 describe("prepay: proactive single-shot top-off (a)", () => {
   it("after balance falls below watermark, the next set sends a $20 top-off PAYMENT-SIGNATURE", async () => {
     const calls: Captured[] = [];
-    mockFetch(calls, (cap) => {
+    mockFetch(calls, (_cap) => {
       // Every op succeeds; report a low balance: 5000 credits = $0.50, well below the
       // $10 watermark (= 100,000 credits at the correct 10,000-credit/$ rate).
       return new Response(JSON.stringify({ ok: true, expires_at: "x" }), {
