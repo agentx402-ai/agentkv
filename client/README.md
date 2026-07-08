@@ -111,8 +111,6 @@ The same applies to `opInlinePayer`: it also only fires on a `402`, and a brand-
 401s before it ever sees one, so it cannot bootstrap a fresh account either — deposit once
 first, same as above.
 
-- **API versioning** — `apiVersion` defaults to `"1"`, targeting the `/v1` API; pass
-  `apiVersion: "legacy"` to target the pre-versioning paths (for an un-migrated worker).
 - **Usage envelope is asymmetric** — writes get it inline on `SetResult.usage`; reads need the
   separate `getWithUsage(key)` accessor (returning `{ value, usage }`), since `get()` keeps its
   `Promise<T | null>` signature unchanged.
