@@ -1,0 +1,27 @@
+name: Notify marketplace of release
+
+# On a published GitHub Release, dispatch to agentx402-ai/claude-plugins so it pins the
+# agentkv plugin's marketplace source.ref to this release tag (zero-touch release sync).
+# Requires the MARKETPLACE_DISPATCH_TOKEN secret: a fine-grained PAT owned by the persona
+# bot, scoped to claude-plugins with Contents: write. Fires only for real Releases, not
+# plain `git push --tags`.
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger marketplace sync
+        env:
+          GH_TOKEN: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          jq -nc --arg ref "$TAG" \
+            '{event_type:"plugin-release",client_payload:{plugin:"agentkv",ref:$ref}}' \
+          | gh api /repos/agentx402-ai/claude-plugins/dispatches --method POST --input -

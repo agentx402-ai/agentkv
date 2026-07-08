@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    # A docs-only push to main doesn't need the full build/test matrix. PRs still run
+    # unfiltered (the pull_request trigger above), so every change is checked before it merges.
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run lint # biome: format + lint (no build needed)
+
+  build-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "${{ matrix.node }}"
+          cache: npm
+      - run: npm ci
+      - run: npm run build # MUST precede test: cli typecheck resolves @agentkv/client via client/dist
+      - run: npm test # tsc --noEmit + vitest, both workspaces
+
+  plugin-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Validate plugin manifests are well-formed JSON
+        run: |
+          for f in .claude-plugin/marketplace.json \
+                   plugin/agentkv/.claude-plugin/plugin.json \
+                   plugin/agentkv/.mcp.json; do
+            # NOTE: `node … && echo` would swallow the failure — under `bash -e`, a non-final
+            # command in an `&&` list does not trigger errexit, so a JSON.parse crash (or ENOENT)
+            # passed the job green. Run them as separate statements so errexit aborts on failure.
+            node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))"
+            echo "ok: $f"
+          done
+
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm pack --dry-run --workspaces
+
+  no-internal-refs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fail on private/internal references in tracked files
+        run: |
+          # Keep the public tree free of the private backend repo name and its
+          # internal file paths. This workflow file is excluded because it
+          # necessarily names the patterns it searches for.
+          if git grep -nIE 'agentkv-worker|worker/(src|test)/' -- ':!.github/workflows/ci.yml'; then
+            echo "::error::internal/private reference found in a tracked file (see matches above)"
+            exit 1
+          fi
+          echo "ok: no internal references in tracked files"
+
+  versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Publishable package versions must match (coordinated release)
+        run: |
+          node -e '
+            const fs = require("fs");
+            const ver = (p) => JSON.parse(fs.readFileSync(p, "utf8")).version;
+            const v = { core: ver("core/package.json"), client: ver("client/package.json"), cli: ver("cli/package.json") };
+            const uniq = [...new Set(Object.values(v))];
+            if (uniq.length !== 1) { console.error("::error::publishable package versions diverge:", JSON.stringify(v)); process.exit(1); }
+            console.log("ok: core, client, cli all at " + uniq[0]);
+          '
