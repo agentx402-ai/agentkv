@@ -7,7 +7,7 @@
 // every op still sends a fresh, non-empty `Idempotency-Key`.
 import { hexToBytes } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deriveKeyMaterial, encrypt } from "../src/crypto";
+import { deriveKeyMaterial, encrypt, hashKey } from "../src/crypto";
 import { AgentKV } from "../src/index";
 import type { UsageBlock } from "../src/types";
 
@@ -92,8 +92,12 @@ describe("usage envelope (client mirror of the backend's usage envelope)", () =>
 
   it("getWithUsage() returns both the decrypted value and the usage envelope", async () => {
     const original = { hello: "world", n: 7 };
-    const key = deriveKeyMaterial(hexToBytes(PK_A)).value;
-    const ciphertext = await encrypt(key, JSON.stringify(original));
+    const km = deriveKeyMaterial(hexToBytes(PK_A));
+    const ciphertext = await encrypt(
+      km.value,
+      JSON.stringify(original),
+      hashKey(km.mac, "session"),
+    );
 
     mockFetch(
       () =>
@@ -133,8 +137,12 @@ describe("usage envelope (client mirror of the backend's usage envelope)", () =>
 
   it("get() keeps its existing T | null signature and behavior unaffected by usage", async () => {
     const original = { still: "works" };
-    const key = deriveKeyMaterial(hexToBytes(PK_A)).value;
-    const ciphertext = await encrypt(key, JSON.stringify(original));
+    const km = deriveKeyMaterial(hexToBytes(PK_A));
+    const ciphertext = await encrypt(
+      km.value,
+      JSON.stringify(original),
+      hashKey(km.mac, "session"),
+    );
 
     mockFetch(
       () =>

@@ -41,7 +41,7 @@ import {
 
 export { generateAccountKey, isAccountKeyFormat } from "./account";
 export type { KeyMaterial } from "./crypto";
-export { decrypt, deriveKey, deriveKeyMaterial, encrypt, hashKey } from "./crypto";
+export { decrypt, deriveKeyMaterial, encrypt, hashKey } from "./crypto";
 export type {
   AgentKVOptions,
   DeleteResult,
@@ -142,7 +142,6 @@ export class AgentKV {
   private readonly timeoutMs?: number;
   private readonly fetchImpl?: typeof fetch;
   private _ikm?: Uint8Array;
-  private _explicitKey = false;
   private _km?: KeyMaterial;
   private _kmPromise?: Promise<KeyMaterial>;
   private sessionSpentUsd = 0;
@@ -256,8 +255,8 @@ export class AgentKV {
     if (isAccountMode) {
       // Account-key mode: no signing wallet. The `ak_…` bearer token is the
       // identity. There is no wallet to derive an AES key from, so an explicit
-      // `encryptionKey` is REQUIRED and used directly (the `_explicitKey` path,
-      // so getKeyMaterial never hits sign-to-derive — there is nothing to sign).
+      // `encryptionKey` is REQUIRED and used directly to derive the key material
+      // (getKeyMaterial never hits sign-to-derive — there is nothing to sign).
       if (!isAccountKeyFormat(opts.accountKey)) {
         throw new AgentKVError(
           "accountKey must be a string of the form ak_<64 lowercase hex>",
@@ -278,7 +277,6 @@ export class AgentKV {
       // Use the zero address as a documented sentinel — never sent on the wire.
       this.address = "0x0000000000000000000000000000000000000000";
       this._ikm = normalizeEncryptionKey(opts.encryptionKey);
-      this._explicitKey = true;
     } else if ("privateKey" in opts && opts.privateKey != null) {
       // Discriminate on the VALUE (not mere presence), mirroring the accountKey guard:
       // `{ ...cfg, privateKey: undefined, signer: validSigner }` must fall through to the
@@ -302,7 +300,6 @@ export class AgentKV {
       this.signer = opts.signer;
       if ("encryptionKey" in opts && opts.encryptionKey) {
         this._ikm = normalizeEncryptionKey(opts.encryptionKey);
-        this._explicitKey = true; // legacy 0.1.0 blobs used this key directly
       }
       // else: lazy sign-to-derive in getKeyMaterial()
       this.address = this.signer.address;
@@ -332,7 +329,6 @@ export class AgentKV {
     if (!this._kmPromise) {
       this._kmPromise = (async () => {
         let ikm = this._ikm;
-        let explicit = this._explicitKey;
         if (!ikm) {
           // Sign-to-derive: only the `{signer}` (no explicit key) shape reaches
           // here. Account-key mode always has an explicit `_ikm`, so `signer` is
@@ -361,9 +357,8 @@ export class AgentKV {
             );
           }
           ikm = sigBytes;
-          explicit = false;
         }
-        const km = deriveKeyMaterial(ikm, explicit);
+        const km = deriveKeyMaterial(ikm);
         this._km = km;
         return km;
       })().catch((err) => {
@@ -378,22 +373,14 @@ export class AgentKV {
   }
 
   /**
-   * Decrypt a value envelope with the current value key, falling back to the legacy key
-   * for pre-skeleton (no-magic) 0.1.0 blobs.
+   * Decrypt a value envelope with the current value key, binding the key's blind-index
+   * digest into the AAD so a value the server serves for the wrong key fails the auth tag.
    */
-  private async decryptValue(packed: string): Promise<string> {
+  private async decryptValue(packed: string, key: string): Promise<string> {
     const km = await this.getKeyMaterial();
-    try {
-      return await decrypt(km.value, packed);
-    } catch (primary) {
-      try {
-        return await decrypt(km.legacyValue, packed);
-      } catch {
-        // both the current and legacy value keys failed — surface the primary
-        // (current-key) error, the relevant one for a value written by this client.
-        throw primary;
-      }
-    }
+    // Bind the key's blind-index digest into the AAD so a value the server serves for the
+    // WRONG key fails the auth tag instead of silently decrypting (substitution defense).
+    return decrypt(km.value, packed, hashKey(km.mac, key));
   }
 
   private assertSpend(usd: number, opts: { bypassPerOpCap?: boolean } = {}): void {
@@ -724,10 +711,12 @@ export class AgentKV {
         );
       }
       const km = await this.getKeyMaterial();
-      const ciphertext = await encrypt(km.value, plaintext);
       // Hide the key NAME too: address the server by an opaque per-wallet digest and
       // ship the encrypted name alongside (for list-keys) — never the plaintext name.
       const digest = hashKey(km.mac, key);
+      // Bind the digest into the value's AAD so the server can't later serve this ciphertext
+      // for a DIFFERENT key's request without failing the auth tag (substitution defense).
+      const ciphertext = await encrypt(km.value, plaintext, digest);
       const body: Record<string, unknown> = {
         value: ciphertext,
         key_name: await encrypt(km.keyName, key),
@@ -1094,14 +1083,14 @@ export class AgentKV {
           }
           this.recordSpend(this.inlineSettledAmountUsd(inlineRes.headers) ?? ACCOUNT_READ_USD);
           const data = JSON.parse(inlineRes.body) as { value: string; usage?: UsageBlock };
-          const decryptedText = await this.decryptValue(data.value);
+          const decryptedText = await this.decryptValue(data.value, key);
           return { value: JSON.parse(decryptedText) as T, usage: data.usage };
         }
         if (res.status === 404) return { value: null };
         if (!res.ok) throw await this.asError(res, "get failed");
         this.recordSpend(ACCOUNT_READ_USD);
         const data = (await res.json()) as { value: string; usage?: UsageBlock };
-        const decryptedText = await this.decryptValue(data.value);
+        const decryptedText = await this.decryptValue(data.value, key);
         return { value: JSON.parse(decryptedText) as T, usage: data.usage };
       }
 
@@ -1145,7 +1134,7 @@ export class AgentKV {
             // and must not inflate session spend (L3). Mirror of the set() path.
             if (this.settledTxHash(res)) this.recordSpend(this.prepay!.topoff);
             const data = (await res.json()) as { value: string; usage?: UsageBlock };
-            const decryptedText = await this.decryptValue(data.value);
+            const decryptedText = await this.decryptValue(data.value, key);
             return { value: JSON.parse(decryptedText) as T, usage: data.usage };
           }
         }
@@ -1213,7 +1202,7 @@ export class AgentKV {
       }
 
       const data = (await res.json()) as { value: string; usage?: UsageBlock };
-      const decryptedText = await this.decryptValue(data.value);
+      const decryptedText = await this.decryptValue(data.value, key);
       return { value: JSON.parse(decryptedText) as T, usage: data.usage };
     } finally {
       if (claimedTopoff) this.topoffInFlight = false;

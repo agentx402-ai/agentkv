@@ -5,8 +5,6 @@ import { describe, expect, it } from "vitest";
 import {
   DIGEST_SCHEME_V1,
   decrypt,
-  deriveKey,
-  deriveKeyFromBytes,
   deriveKeyMaterial,
   encrypt,
   hashKey,
@@ -16,15 +14,6 @@ import {
 const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 
 describe("crypto key derivation", () => {
-  it("deriveKey equals deriveKeyFromBytes(hexToBytes(pk)) — parity preserved", () => {
-    expect(Array.from(deriveKey(PK))).toEqual(Array.from(deriveKeyFromBytes(hexToBytes(PK))));
-  });
-  it("deriveKeyFromBytes is deterministic and 32 bytes", () => {
-    const a = deriveKeyFromBytes(new Uint8Array([1, 2, 3]));
-    const b = deriveKeyFromBytes(new Uint8Array([1, 2, 3]));
-    expect(a.length).toBe(32);
-    expect(Array.from(a)).toEqual(Array.from(b));
-  });
   it("normalizeEncryptionKey accepts 32-byte hex and bytes, rejects wrong length", () => {
     const hex = `0x${"ab".repeat(32)}` as `0x${string}`;
     expect(normalizeEncryptionKey(hex).length).toBe(32);
@@ -33,31 +22,9 @@ describe("crypto key derivation", () => {
   });
 });
 
-const KEY = deriveKeyFromBytes(new Uint8Array(32).fill(7));
+const KEY = new Uint8Array(32).fill(7); // raw AES-256 key (encrypt/decrypt use it directly)
 const b64ToBytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 const bytesToB64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
-
-/** Produce a legacy 0.1.0 blob: base64(IV ‖ ct), NO version header and NO AAD. */
-async function makeLegacyBlob(
-  key: Uint8Array,
-  plaintext: string,
-  iv: Uint8Array<ArrayBuffer> = crypto.getRandomValues(new Uint8Array(12)),
-): Promise<string> {
-  const ck = await crypto.subtle.importKey("raw", key as BufferSource, { name: "AES-GCM" }, false, [
-    "encrypt",
-  ]);
-  const ct = new Uint8Array(
-    await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv } as AesGcmParams,
-      ck,
-      new TextEncoder().encode(plaintext) as BufferSource,
-    ),
-  );
-  const packed = new Uint8Array(iv.length + ct.length);
-  packed.set(iv, 0);
-  packed.set(ct, iv.length);
-  return bytesToB64(packed);
-}
 
 describe("versioned envelope", () => {
   it("round-trips and emits the self-describing 'ak' magic header", async () => {
@@ -72,56 +39,42 @@ describe("versioned envelope", () => {
     expect(await encrypt(KEY, "x")).not.toBe(await encrypt(KEY, "x"));
   });
 
-  it("rejects a tampered header — the kdf_id is AAD-bound (flipping it fails the tag)", async () => {
+  it("rejects a tampered header — the kdf_id is bound (flipping it fails)", async () => {
     const bytes = b64ToBytes(await encrypt(KEY, "secret"));
-    bytes[4] = bytes[4] ^ 0xff; // flip kdf_id: ver/suite stay valid, but the AAD changes
+    bytes[4] = bytes[4] ^ 0xff; // flip kdf_id
     await expect(decrypt(KEY, bytesToB64(bytes))).rejects.toThrow();
   });
 
-  it("rejects an unsupported envelope version", async () => {
+  it("rejects an unsupported envelope version with a clear, upgrade-pointing error", async () => {
     const bytes = b64ToBytes(await encrypt(KEY, "secret"));
     bytes[2] = 0x02; // a version this client does not understand
-    await expect(decrypt(KEY, bytesToB64(bytes))).rejects.toThrow(/unsupported/i);
+    await expect(decrypt(KEY, bytesToB64(bytes))).rejects.toThrow(/not a recognized|upgrade/i);
   });
 
-  it("reports a clear 'unsupported … kdf=N; upgrade' error for a future kdf_id (not an opaque OperationError)", async () => {
-    // ver=1, suite=1, kdf=2: a valid-looking FUTURE key-derivation scheme this client cannot
-    // handle. Without gating `known` on kdf_id, this fell through to legacy decrypt and rethrew
-    // a raw WebCrypto OperationError; now it names the mismatch and points at an upgrade.
+  it("names a future kdf_id in the error (not an opaque OperationError)", async () => {
     const bytes = b64ToBytes(await encrypt(KEY, "secret"));
-    bytes[4] = 0x02;
-    await expect(decrypt(KEY, bytesToB64(bytes))).rejects.toThrow(/unsupported.*kdf=2/i);
+    bytes[4] = 0x02; // ver=1, suite=1, kdf=2: a valid-looking FUTURE derivation scheme
+    await expect(decrypt(KEY, bytesToB64(bytes))).rejects.toThrow(/kdf=2/i);
   });
 
-  it("decrypts a LEGACY (no-magic, no-AAD) 0.1.0 blob via the trial-decrypt fallback", async () => {
-    const packed = await makeLegacyBlob(KEY, "legacy-value");
-    expect(await decrypt(KEY, packed)).toBe("legacy-value");
-  });
-
-  it("does NOT brick a legacy blob whose IV begins with the magic bytes (regression)", async () => {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    iv[0] = 0x61; // 'a'
-    iv[1] = 0x6b; // 'k'
-    iv[2] = 0x42; // NOT the version byte: must fall through to legacy decrypt, never throw "unsupported"
-    const packed = await makeLegacyBlob(KEY, "legacy-collide", iv);
-    expect(await decrypt(KEY, packed)).toBe("legacy-collide");
+  it("binds the key digest into the value AAD: a value served for a DIFFERENT key fails the tag", async () => {
+    const blob = await encrypt(KEY, "prod-secret", "digest-A");
+    expect(await decrypt(KEY, blob, "digest-A")).toBe("prod-secret"); // correct key digest
+    // Server substitutes this ciphertext for a different key's request -> the AAD no longer matches.
+    await expect(decrypt(KEY, blob, "digest-B")).rejects.toThrow(
+      /different key|wrong encryption key/i,
+    );
+    await expect(decrypt(KEY, blob)).rejects.toThrow(); // no digest at all also fails
   });
 });
 
 describe("deriveKeyMaterial — domain separation", () => {
-  it("value/keyName/mac are independent 32-byte keys; legacyValue = old deriveKey", () => {
+  it("value/keyName/mac are independent 32-byte keys", () => {
     const km = deriveKeyMaterial(hexToBytes(PK));
-    for (const k of [km.value, km.keyName, km.mac, km.legacyValue]) expect(k.length).toBe(32);
+    for (const k of [km.value, km.keyName, km.mac]) expect(k.length).toBe(32);
     expect(Array.from(km.value)).not.toEqual(Array.from(km.keyName));
     expect(Array.from(km.value)).not.toEqual(Array.from(km.mac));
     expect(Array.from(km.keyName)).not.toEqual(Array.from(km.mac));
-    expect(Array.from(km.legacyValue)).toEqual(Array.from(deriveKey(PK)));
-  });
-  it("explicit mode: legacyValue is the supplied key; value is HKDF'd (not raw)", () => {
-    const ikm = new Uint8Array(32).fill(9);
-    const km = deriveKeyMaterial(ikm, true);
-    expect(Array.from(km.legacyValue)).toEqual(Array.from(ikm));
-    expect(Array.from(km.value)).not.toEqual(Array.from(ikm));
   });
 });
 
@@ -135,8 +88,8 @@ describe("hashKey — blind index digest", () => {
     expect(firstByte).toBe(DIGEST_SCHEME_V1);
   });
   it("NFC-normalizes: composed and decomposed forms collide to one digest", () => {
-    const composed = "café"; // café (U+00E9)
-    const decomposed = "café"; // café (e + U+0301)
+    const composed = "café"; // café — é as U+00E9
+    const decomposed = "café"; // café — e + combining acute U+0301
     expect(composed).not.toBe(decomposed);
     expect(hashKey(mac, composed)).toBe(hashKey(mac, decomposed));
   });

@@ -1,33 +1,13 @@
 // client/test/client.test.ts
 import { hexToBytes } from "viem";
 import { describe, expect, it } from "vitest";
-import { decrypt, deriveKey, encrypt } from "../src/crypto";
+import { decrypt, encrypt } from "../src/crypto";
 
 const PK_A = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 const PK_B = "0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba" as const;
 
-describe("crypto.deriveKey", () => {
-  it("produces a 32-byte key", () => {
-    const key = deriveKey(PK_A);
-    expect(key).toBeInstanceOf(Uint8Array);
-    expect(key.length).toBe(32);
-  });
-
-  it("is deterministic: same private key -> same key", () => {
-    const k1 = deriveKey(PK_A);
-    const k2 = deriveKey(PK_A);
-    expect(Array.from(k1)).toEqual(Array.from(k2));
-  });
-
-  it("different private key -> different key", () => {
-    const ka = deriveKey(PK_A);
-    const kb = deriveKey(PK_B);
-    expect(Array.from(ka)).not.toEqual(Array.from(kb));
-  });
-});
-
 describe("crypto.encrypt/decrypt", () => {
-  const key = deriveKey(PK_A);
+  const key = deriveKeyMaterial(hexToBytes(PK_A)).value;
 
   it("round-trips: decrypt(encrypt(x)) === x", async () => {
     const plaintext = JSON.stringify({ hello: "world", n: 42 });
@@ -61,7 +41,7 @@ describe("crypto.encrypt/decrypt", () => {
 
   it("decrypt fails when the key is wrong", async () => {
     const packed = await encrypt(key, "secret");
-    const wrongKey = deriveKey(PK_B);
+    const wrongKey = deriveKeyMaterial(hexToBytes(PK_B)).value;
     await expect(decrypt(wrongKey, packed)).rejects.toBeDefined();
   });
 });
@@ -69,12 +49,7 @@ describe("crypto.encrypt/decrypt", () => {
 import { privateKeyToAccount } from "viem/accounts";
 // append to client/test/client.test.ts
 import { afterEach, beforeEach, vi } from "vitest";
-import {
-  deriveKeyMaterial,
-  decrypt as rawDecrypt,
-  deriveKey as rawDeriveKey,
-  hashKey as rawHashKey,
-} from "../src/crypto";
+import { deriveKeyMaterial, decrypt as rawDecrypt, hashKey as rawHashKey } from "../src/crypto";
 import { AgentKV } from "../src/index";
 
 describe("AgentKV construction", () => {
@@ -156,8 +131,8 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     expect(JSON.stringify(capturedBody)).not.toContain("do-not-leak");
 
     // Ciphertext decrypts back to the original plaintext with the NEW (domain-separated) value key.
-    const key = deriveKeyMaterial(hexToBytes(PK_A)).value;
-    const decrypted = await rawDecrypt(key, capturedBody.value);
+    const km = deriveKeyMaterial(hexToBytes(PK_A));
+    const decrypted = await rawDecrypt(km.value, capturedBody.value, rawHashKey(km.mac, "session"));
     expect(JSON.parse(decrypted)).toEqual(plaintext);
 
     // Stable Idempotency-Key is present.
@@ -249,9 +224,13 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     // Encrypt under the PRIMARY domain-separated value key (what a current client writes),
     // so this exercises the primary decrypt path — not the legacy-key fallback (covered
     // separately by the "no-magic LEGACY 0.1.0 blob" test below).
-    const key = deriveKeyMaterial(hexToBytes(PK_A)).value;
-    const { encrypt } = await import("../src/crypto");
-    const ciphertext = await encrypt(key, JSON.stringify(original));
+    const km = deriveKeyMaterial(hexToBytes(PK_A));
+    const { encrypt, hashKey } = await import("../src/crypto");
+    const ciphertext = await encrypt(
+      km.value,
+      JSON.stringify(original),
+      hashKey(km.mac, "session"),
+    );
 
     mockFetch((_url, init) => {
       expect(init.method).toBe("GET");
@@ -269,36 +248,6 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
 
     const out = await kv.get("session");
     expect(out).toEqual(original);
-  });
-
-  it("get decrypts a no-magic LEGACY 0.1.0 blob via the value->legacy key fallback", async () => {
-    // craft a 0.1.0 blob: base64(IV ‖ ct), NO version header, NO AAD, under the LEGACY key
-    const legacyKey = rawDeriveKey(PK_A);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ck = await crypto.subtle.importKey(
-      "raw",
-      legacyKey as BufferSource,
-      { name: "AES-GCM" },
-      false,
-      ["encrypt"],
-    );
-    const pt = new TextEncoder().encode(JSON.stringify({ migrated: true }));
-    const ct = new Uint8Array(
-      await crypto.subtle.encrypt({ name: "AES-GCM", iv } as AesGcmParams, ck, pt as BufferSource),
-    );
-    const blob = new Uint8Array(iv.length + ct.length);
-    blob.set(iv, 0);
-    blob.set(ct, iv.length);
-    const ciphertext = btoa(String.fromCharCode(...blob));
-
-    mockFetch(
-      () =>
-        new Response(JSON.stringify({ value: ciphertext, expires_at: "x" }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-    );
-    expect(await kv.get("legacy-key")).toEqual({ migrated: true });
   });
 
   it("get returns null on 404", async () => {
@@ -423,9 +372,13 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
   });
 
   it("get tries the credit path first: identity signature, no payment, on a 200", async () => {
-    const key = deriveKeyMaterial(hexToBytes(PK_A)).value; // primary value key, not legacy
-    const { encrypt } = await import("../src/crypto");
-    const ciphertext = await encrypt(key, JSON.stringify({ ok: 1 }));
+    const km = deriveKeyMaterial(hexToBytes(PK_A));
+    const { encrypt, hashKey } = await import("../src/crypto");
+    const ciphertext = await encrypt(
+      km.value,
+      JSON.stringify({ ok: 1 }),
+      hashKey(km.mac, "session"),
+    );
     mockFetch((_url, init) => {
       const h = new Headers(init.headers);
       expect(init.method).toBe("GET");
@@ -448,9 +401,13 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
   });
 
   it("get falls back to x402 payment when credits are insufficient (402)", async () => {
-    const key = deriveKeyMaterial(hexToBytes(PK_A)).value; // primary value key, not legacy
-    const { encrypt } = await import("../src/crypto");
-    const ciphertext = await encrypt(key, JSON.stringify("paid-value"));
+    const km = deriveKeyMaterial(hexToBytes(PK_A));
+    const { encrypt, hashKey } = await import("../src/crypto");
+    const ciphertext = await encrypt(
+      km.value,
+      JSON.stringify("paid-value"),
+      hashKey(km.mac, "session"),
+    );
     const challenge = btoa(
       JSON.stringify({
         x402Version: 2,
@@ -607,9 +564,9 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
         ],
       }),
     );
-    const dkey = deriveKeyMaterial(hexToBytes(PK_A)).value; // primary value key, not legacy
-    const { encrypt } = await import("../src/crypto");
-    const ciphertext = await encrypt(dkey, JSON.stringify("v"));
+    const km = deriveKeyMaterial(hexToBytes(PK_A));
+    const { encrypt, hashKey } = await import("../src/crypto");
+    const ciphertext = await encrypt(km.value, JSON.stringify("v"), hashKey(km.mac, "session"));
 
     const idemHeaders: (string | null)[] = [];
     const paymentNonces: string[] = [];

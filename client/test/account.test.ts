@@ -8,7 +8,13 @@ import { getAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateAccountKey, isAccountKeyFormat } from "../src/account";
-import { decrypt, deriveKeyMaterial, encrypt, normalizeEncryptionKey } from "../src/crypto";
+import {
+  decrypt,
+  deriveKeyMaterial,
+  encrypt,
+  hashKey,
+  normalizeEncryptionKey,
+} from "../src/crypto";
 import { AgentKV } from "../src/index";
 import { nonceFromIdempotencyKey } from "../src/payment";
 import { AgentKVError, SpendCapError } from "../src/types";
@@ -76,7 +82,7 @@ describe("AgentKV account-key constructor", () => {
   it("uses the local encryptionKey for key material (no sign-to-derive)", async () => {
     const kv = new AgentKV({ accountKey: AK, encryptionKey: ENC_A, endpoint: ENDPOINT });
     const km = await (kv as any).getKeyMaterial();
-    const expected = deriveKeyMaterial(normalizeEncryptionKey(ENC_A), true);
+    const expected = deriveKeyMaterial(normalizeEncryptionKey(ENC_A));
     expect(Array.from(km.value)).toEqual(Array.from(expected.value));
   });
 });
@@ -121,8 +127,12 @@ describe("AgentKV account-key header selection (mocked fetch)", () => {
 
   it("get sends Bearer and never an EIP-712 / x402 header", async () => {
     const kv = new AgentKV({ accountKey: AK, encryptionKey: ENC_A, endpoint: ENDPOINT });
-    const km = deriveKeyMaterial(normalizeEncryptionKey(ENC_A), true);
-    const ciphertext = await encrypt(km.value, JSON.stringify({ ok: 1 }));
+    const km = deriveKeyMaterial(normalizeEncryptionKey(ENC_A));
+    const ciphertext = await encrypt(
+      km.value,
+      JSON.stringify({ ok: 1 }),
+      hashKey(km.mac, "session"),
+    );
     mockFetch((_u, init) => {
       expect(init.method).toBe("GET");
       return new Response(JSON.stringify({ value: ciphertext, expires_at: "x" }), { status: 200 });
@@ -145,7 +155,7 @@ describe("AgentKV account-key header selection (mocked fetch)", () => {
 
   it("listKeys sends Bearer and never an EIP-712 header", async () => {
     const kv = new AgentKV({ accountKey: AK, encryptionKey: ENC_A, endpoint: ENDPOINT });
-    const km = deriveKeyMaterial(normalizeEncryptionKey(ENC_A), true);
+    const km = deriveKeyMaterial(normalizeEncryptionKey(ENC_A));
     const name = "secret:openai";
     const items = [{ key: "digest1", key_name: await encrypt(km.keyName, name) }];
     mockFetch((u, init) => {
@@ -212,12 +222,14 @@ describe("AgentKV account-key encryption round-trip", () => {
     // Same key (same client) reads it back.
     expect(await writer.get("k")).toEqual(value);
     // Decrypts directly with the local value key too.
-    const km = deriveKeyMaterial(normalizeEncryptionKey(ENC_A), true);
-    expect(JSON.parse(await decrypt(km.value, stored as unknown as string))).toEqual(value);
+    const km = deriveKeyMaterial(normalizeEncryptionKey(ENC_A));
+    expect(
+      JSON.parse(await decrypt(km.value, stored as unknown as string, hashKey(km.mac, "k"))),
+    ).toEqual(value);
   });
 
   it("a different encryptionKey fails to decrypt the stored value", async () => {
-    const km = deriveKeyMaterial(normalizeEncryptionKey(ENC_A), true);
+    const km = deriveKeyMaterial(normalizeEncryptionKey(ENC_A));
     const ciphertext = await encrypt(km.value, JSON.stringify({ secret: 1 }));
     const reader = new AgentKV({ accountKey: AK, encryptionKey: ENC_B, endpoint: ENDPOINT });
     vi.stubGlobal(

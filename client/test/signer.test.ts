@@ -3,38 +3,28 @@
 import { hexToBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
-import {
-  decrypt,
-  deriveKey,
-  deriveKeyMaterial,
-  encrypt,
-  normalizeEncryptionKey,
-} from "../src/crypto";
+import { decrypt, deriveKeyMaterial, encrypt, normalizeEncryptionKey } from "../src/crypto";
 import { AgentKV } from "../src/index";
 
 const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 const ENDPOINT = "https://api.example.com";
 
 describe("AgentKV constructor shapes", () => {
-  it("(1) privateKey: value key = domain-separated scheme; legacyValue = old deriveKey (parity)", async () => {
+  it("(1) privateKey: value key = domain-separated scheme", async () => {
     const kv = new AgentKV({ privateKey: PK, endpoint: ENDPOINT });
     const km = await (kv as any).getKeyMaterial();
     expect(Array.from(km.value)).toEqual(Array.from(deriveKeyMaterial(hexToBytes(PK)).value));
-    // legacy parity: legacyValue still equals the old deriveKey so old blobs decrypt
-    expect(Array.from(km.legacyValue)).toEqual(Array.from(deriveKey(PK)));
-    expect(Array.from(km.value)).not.toEqual(Array.from(km.legacyValue)); // new scheme is independent
     expect(kv.address).toBe(privateKeyToAccount(PK).address);
   });
 
-  it("(2) signer + encryptionKey: value key = HKDF(explicit); legacyValue = the supplied key", async () => {
+  it("(2) signer + encryptionKey: value key = HKDF(explicit key)", async () => {
     const signer = privateKeyToAccount(PK);
     const encKey = normalizeEncryptionKey(`0x${"cd".repeat(32)}` as `0x${string}`);
     const kv = new AgentKV({ signer, encryptionKey: encKey, endpoint: ENDPOINT });
     const km = await (kv as any).getKeyMaterial();
-    expect(Array.from(km.value)).toEqual(Array.from(deriveKeyMaterial(encKey, true).value));
-    expect(Array.from(km.legacyValue)).toEqual(Array.from(encKey)); // legacy mode used the key directly
+    expect(Array.from(km.value)).toEqual(Array.from(deriveKeyMaterial(encKey).value));
     const packed = await encrypt(km.value, "hello");
-    expect(await decrypt(km.value, packed)).toBe("hello"); // round-trips under the new value key
+    expect(await decrypt(km.value, packed)).toBe("hello"); // round-trips under the value key
   });
 
   it("(3) signer-only derives a deterministic value key from a fixed-message signature", async () => {
