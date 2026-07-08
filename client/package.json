@@ -60,7 +60,7 @@
   "dependencies": {
     "@agentx402/core": "^0.1.0",
     "@noble/hashes": "^1.4.0",
-    "viem": "^2.21.0"
+    "viem": "^2.54.6"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
