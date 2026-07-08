@@ -1,14 +1,20 @@
 name: Notify marketplace of release
 
-# On a published GitHub Release, dispatch to agentx402-ai/claude-plugins so it pins the
-# agentkv plugin's marketplace source.ref to this release tag (zero-touch release sync).
-# Requires the MARKETPLACE_DISPATCH_TOKEN secret: a fine-grained PAT owned by the persona
-# bot, scoped to claude-plugins with Contents: write. Fires only for real Releases, not
-# plain `git push --tags`.
+# On a published GitHub Release (or a manual run), dispatch to agentx402-ai/claude-plugins
+# so it pins the agentkv plugin's marketplace source.ref to the release tag (zero-touch
+# release sync). Requires the MARKETPLACE_DISPATCH_TOKEN secret: a fine-grained PAT owned by
+# the persona bot, scoped to claude-plugins with Contents: write. The release trigger fires
+# only for real Releases, not a plain `git push --tags`; workflow_dispatch is for testing /
+# re-syncing a specific tag by hand.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Release tag to pin the marketplace to (e.g. v0.1.0)
+        required: true
 
 permissions: {}
 
@@ -19,9 +25,12 @@ jobs:
       - name: Trigger marketplace sync
         env:
           GH_TOKEN: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
         run: |
           set -euo pipefail
+          TAG="${RELEASE_TAG:-$INPUT_REF}"
+          case "$TAG" in ''|*[!A-Za-z0-9._/-]*) echo "::error::invalid or empty tag: '$TAG'"; exit 1;; esac
           jq -nc --arg ref "$TAG" \
             '{event_type:"plugin-release",client_payload:{plugin:"agentkv",ref:$ref}}' \
           | gh api /repos/agentx402-ai/claude-plugins/dispatches --method POST --input -
