@@ -9,8 +9,8 @@ Requirements: **Node >= 20** (CI floor; [`.nvmrc`](./.nvmrc) pins the recommende
 
 ```bash
 npm ci
-npm run build      # build all three packages (core, client, cli)
-npm test           # typecheck + unit tests for core, client, and cli
+npm run build      # build the packages (client, cli)
+npm test           # typecheck + unit tests for client and cli
 npm run lint       # biome: format check + lint
 npm run format     # auto-fix formatting + safe lint issues
 ```
@@ -20,7 +20,7 @@ npm run format     # auto-fix formatting + safe lint issues
 
 ### Layout
 
-- `core/` — `@agentx402-ai/core`, the shared x402/EIP-712 platform SDK (client depends on it)
+- `@agentx402-ai/core` — the shared platform SDK, in [its own repo](https://github.com/agentx402-ai/core); a published dependency here, not a workspace
 - `client/` — `@agentkv/client`, the SDK
 - `cli/` — `@agentkv/cli`, the CLI and `agentkv mcp` server (depends on the SDK)
 - `plugin/` — the Claude Code plugin

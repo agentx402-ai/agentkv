@@ -1,13 +1,14 @@
 name: Publish to npm
 
-# Publishes core -> client -> cli to npm on a published GitHub Release, using OIDC
-# Trusted Publishing — NO npm token. Provenance attestations are emitted automatically.
+# Publishes client -> cli to npm on a published GitHub Release, using OIDC Trusted
+# Publishing — NO npm token. Provenance attestations are emitted automatically.
+# (@agentx402-ai/core is released separately from its own repo, agentx402-ai/core.)
 #
 # One-time setup (required before this works): configure a Trusted Publisher on EACH of
-# @agentx402-ai/core, @agentkv/client, @agentkv/cli at npmjs.com → package → Settings →
-# Trusted Publisher → GitHub Actions → repository "agentx402-ai/agentkv", workflow
-# "publish.yml". Bump the version in every source (see RELEASING.md) before cutting the
-# Release, or the publish fails on an already-published version.
+# @agentkv/client, @agentkv/cli at npmjs.com → package → Settings → Trusted Publisher →
+# GitHub Actions → repository "agentx402-ai/agentkv", workflow "publish.yml". Bump the
+# version in every source (see RELEASING.md) before cutting the Release, or the publish
+# fails on an already-published version.
 
 on:
   release:
@@ -30,6 +31,5 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - run: npm publish -w core
       - run: npm publish -w client
       - run: npm publish -w cli

@@ -1,29 +1,30 @@
 # Releasing
 
-AgentKV ships three coordinated npm packages plus a Claude Code plugin. They MUST be
-published together, in dependency order, at the same version.
+AgentKV ships two coordinated npm packages (`@agentkv/client`, `@agentkv/cli`) plus a Claude
+Code plugin. They MUST be published together, in dependency order, at the same version. The
+shared `@agentx402-ai/core` is released separately from [its own repo](https://github.com/agentx402-ai/core).
 
 ## Version sources (keep in sync)
 
-- `core/package.json`, `client/package.json`, `cli/package.json` — the published versions
+- `client/package.json`, `cli/package.json` — the published versions
 - `client/src/index.ts` (`VERSION`) — reported by the SDK
 - `cli/src/version.ts` (`VERSION`) — `agentkv --version` and the MCP server handshake
 - `plugin/agentkv/.claude-plugin/plugin.json` (`version`)
 - `agentx402-ai/claude-plugins` → `.claude-plugin/marketplace.json` (the `agentkv` plugin's
   `source.ref`) — the cross-repo pin the shared marketplace serves; synced on release (step 7).
 
-CI fails if the three publishable `package.json` versions diverge (the `versions` job).
+CI fails if the two publishable `package.json` versions diverge (the `versions` job).
 
 ## Publish order (required)
 
 Each higher package depends on a lower one at `^0.x`, so publish bottom-up:
 
-1. `npm publish -w core` — `@agentx402-ai/core`
-2. `npm publish -w client` — `@agentkv/client` (depends on `@agentx402-ai/core`)
-3. `npm publish -w cli` — `@agentkv/cli` (depends on `@agentkv/client`)
+1. `npm publish -w client` — `@agentkv/client` (depends on the already-published `@agentx402-ai/core`)
+2. `npm publish -w cli` — `@agentkv/cli` (depends on `@agentkv/client`)
 
 Do NOT publish a higher package before the one it depends on, or `npm install` will
-`E404` for consumers until the dependency lands.
+`E404` for consumers until the dependency lands. If you also changed `@agentx402-ai/core`,
+release it first from its own repo and bump the `^` range in `client`/`cli`.
 
 ## Steps
 

@@ -25,25 +25,23 @@ public x402 + EIP-712 protocol.
 
 | Path | Package | What |
 |------|---------|------|
-| [`core/`](./core) | `@agentx402-ai/core` | shared x402/EIP-712 platform SDK (auth, payment, usage) |
 | [`client/`](./client) | `@agentkv/client` | TypeScript SDK — encrypt + sign + pay |
 | [`cli/`](./cli) | `@agentkv/cli` | the `agentkv` command-line, and `agentkv mcp` (MCP server) |
 | [`plugin/`](./plugin) | — | Claude Code plugin (wraps the MCP server) |
 
-## npm scope strategy
+## npm scopes
 
-This monorepo uses **two npm scopes** to distinguish the **platform** from the **service**:
+Two npm scopes separate the **platform** from the **service**:
 
-- **`@agentx402-ai/*`** — the **platform scope**. Contains `@agentx402-ai/core`, a shared SDK for auth,
-  payment, usage tracking, error handling, and retry logic. It is independent and consumed by all
-  agent-native services on the agentx402 platform. It encapsulates x402 protocol and EIP-712
-  signing complexity so services don't repeat it.
-- **`@agentkv/*`** — the **KV service scope**. Contains `@agentkv/client` and `@agentkv/cli`, which
-  **depend on** `@agentx402-ai/core` for shared plumbing. Both packages are specific to the AgentKV
-  service.
+- **`@agentx402-ai/*`** — the **platform scope**: `@agentx402-ai/core`, a shared SDK for auth,
+  payment, usage tracking, error handling, and retry logic, consumed by every agentx402 service.
+  It lives in its own repo ([agentx402-ai/core](https://github.com/agentx402-ai/core)) and is a
+  published dependency of the packages here.
+- **`@agentkv/*`** — the **KV service scope**: `@agentkv/client` and `@agentkv/cli` (this repo),
+  which depend on `@agentx402-ai/core` for shared plumbing.
 
-This separation allows future services (e.g. `@agentfetch/client`) to share `@agentx402-ai/core`
-without inheriting AgentKV-specific logic.
+Keeping `@agentx402-ai/core` in its own repo lets future services (e.g. `@agentfetch/client`)
+share it without depending on the AgentKV repo.
 
 ## Quick start (SDK)
 

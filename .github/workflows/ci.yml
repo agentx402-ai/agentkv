@@ -96,8 +96,8 @@ jobs:
           node -e '
             const fs = require("fs");
             const ver = (p) => JSON.parse(fs.readFileSync(p, "utf8")).version;
-            const v = { core: ver("core/package.json"), client: ver("client/package.json"), cli: ver("cli/package.json") };
+            const v = { client: ver("client/package.json"), cli: ver("cli/package.json") };
             const uniq = [...new Set(Object.values(v))];
             if (uniq.length !== 1) { console.error("::error::publishable package versions diverge:", JSON.stringify(v)); process.exit(1); }
-            console.log("ok: core, client, cli all at " + uniq[0]);
+            console.log("ok: client, cli all at " + uniq[0]);
           '

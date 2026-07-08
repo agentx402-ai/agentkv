@@ -15,18 +15,17 @@
     "url": "https://github.com/agentx402-ai/agentkv/issues"
   },
   "workspaces": [
-    "core",
     "client",
     "cli"
   ],
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || true",
-    "build": "npm --workspace core run build && npm --workspace client run build && npm --workspace cli run build",
-    "typecheck": "npm --workspace core run typecheck && npm --workspace client run typecheck && npm --workspace cli run typecheck",
-    "pretest": "npm --workspace core run build && npm --workspace client run build",
-    "test": "npm --workspace core test && npm --workspace client test && npm --workspace cli test",
-    "pretest:coverage": "npm --workspace core run build && npm --workspace client run build",
-    "test:coverage": "npm --workspace core run test:coverage && npm --workspace client run test:coverage && npm --workspace cli run test:coverage",
+    "build": "npm --workspace client run build && npm --workspace cli run build",
+    "typecheck": "npm --workspace client run typecheck && npm --workspace cli run typecheck",
+    "pretest": "npm --workspace client run build",
+    "test": "npm --workspace client test && npm --workspace cli test",
+    "pretest:coverage": "npm --workspace client run build",
+    "test:coverage": "npm --workspace client run test:coverage && npm --workspace cli run test:coverage",
     "lint": "biome ci .",
     "format": "biome check --write ."
   },
