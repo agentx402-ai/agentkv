@@ -2,11 +2,9 @@
 //
 // clientFromConfig (cli/src/config.ts) spreads only
 // { endpoint, network, maxSpendUsd, maxSessionSpendUsd } into every `new
-// AgentKV(...)` it builds and never sets `apiVersion` — so the CLI-built
-// client INHERITS the client's `"1"` default and targets `/v1/*` by
-// construction, not by any CLI-side logic. That inheritance was previously
-// untested at the CLI boundary; assert it explicitly here so a future change
-// to the client's default (or to clientFromConfig's base spread) is caught.
+// AgentKV(...)` it builds, so every CLI-built client targets `/v1/*` by
+// construction. Asserted explicitly here so a change to clientFromConfig's
+// base spread (or the client's routing) is caught at the CLI boundary.
 //
 // Asserts against `kvRoute()` — the PRODUCTION path helper `set`/`get`/
 // `delete` actually call (see client/src/index.ts) — not the `url()` method,
@@ -22,7 +20,7 @@ describe("CLI client targets /v1 by default", () => {
       network: "eip155:8453",
       privateKey: `0x${"11".repeat(32)}` as `0x${string}`,
     };
-    // clientFromConfig never sets apiVersion -> AgentKV defaults to "1" -> /v1/*.
+    // clientFromConfig builds a client that targets /v1/*.
     const client = clientFromConfig(cfg) as any;
     expect(client.kvRoute("k").url).toMatch(/\/v1\/kv\/k$/);
     expect(client.kvRoute("k").path).toBe("/v1/kv/k");

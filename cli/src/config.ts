@@ -8,11 +8,8 @@ import { agentkvDir, getOrCreateStoredWallet, peekStoredAccount } from "./keysto
 
 /**
  * Hosted AgentKV service — used when no endpoint is configured. This is a bare
- * host, not a versioned path: clientFromConfig never sets `apiVersion`, so
- * every CLI-built client inherits `@agentkv/client`'s `"1"` default and
- * targets this host's `/v1/*` routes (see AgentKV.route()/kvRoute() in
- * client/src/index.ts). The pre-`/v1` legacy paths remain supported by the
- * worker, but the CLI has no knob to opt into them.
+ * host, not a versioned path: every client targets this host's `/v1/*` routes
+ * (see AgentKV.route()/kvRoute() in client/src/index.ts).
  */
 const DEFAULT_ENDPOINT = "https://api.agentx402.ai";
 

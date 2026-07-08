@@ -59,12 +59,6 @@ export interface OpInlineResponse {
 interface AgentKVCommon {
   endpoint: string;
   network?: string;
-  /**
-   * API version prefix. `"1"` (default) targets `/v1/*`; `"legacy"` targets the
-   * pre-versioning paths. Applied to BOTH the EIP-712-signed path and the
-   * fetched URL so they never diverge.
-   */
-  apiVersion?: "1" | "legacy";
   /** Per-paying-call USD cap; throws SpendCapError if exceeded. */
   maxSpendUsd?: number;
   /**

@@ -155,7 +155,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
 
     const km = deriveKeyMaterial(hexToBytes(PK_A));
     const digest = rawHashKey(km.mac, "secret:stripe-prod");
-    expect(url).toBe(`${endpoint}/v1/kv/${digest}`); // path is the opaque per-wallet digest (default apiVersion "1")
+    expect(url).toBe(`${endpoint}/v1/kv/${digest}`); // path is the opaque per-wallet digest
     expect(url).not.toContain("stripe"); // cleartext key name NOT in the URL
     expect(typeof body.key_name).toBe("string");
     expect(JSON.stringify(body)).not.toContain("stripe"); // nor anywhere in the body
@@ -183,7 +183,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     const res = await kv.listKeys();
     expect(res.keys.sort()).toEqual([...names].sort());
     expect(res.cursor).toBeNull();
-    // Default apiVersion "1": the v1 canonical list path is /v1/kv (NOT /v1/list-keys).
+    // the v1 canonical list path is /v1/kv (NOT /v1/list-keys).
     expect(hitPath).toContain("/v1/kv");
   });
 
@@ -257,43 +257,6 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     );
     const out = await kv.get("missing");
     expect(out).toBeNull();
-  });
-
-  it("apiVersion:'legacy' set→get round-trips against the LEGACY /kv path, never /v1/kv", async () => {
-    // Guards against a future refactor silently dropping the legacy branch: every
-    // other set/get test above defaults to apiVersion "1"; this is the one place
-    // the pre-versioning path gets exercised end-to-end (encrypt → store → fetch →
-    // decrypt), not just path-shape assertions (see paths.test.ts).
-    const legacyKv = new AgentKV({ privateKey: PK_A, endpoint, apiVersion: "legacy" });
-    const store = new Map<string, string>(); // fake server: url -> stored ciphertext
-    const hitUrls: string[] = [];
-
-    mockFetch((url, init) => {
-      hitUrls.push(url);
-      if (init.method === "GET") {
-        return new Response(JSON.stringify({ value: store.get(url), expires_at: "x" }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      store.set(url, JSON.parse(init.body as string).value);
-      return new Response(JSON.stringify({ ok: true, expires_at: "x" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    });
-
-    const original = { hello: "legacy-world" };
-    await legacyKv.set("session", original);
-    const out = await legacyKv.get("session");
-    expect(out).toEqual(original); // round-trip works
-
-    expect(hitUrls).toHaveLength(2);
-    for (const url of hitUrls) {
-      const path = new URL(url).pathname;
-      expect(path).toMatch(/^\/kv\//); // LEGACY path
-      expect(path).not.toMatch(/^\/v1\//); // NOT the v1 path
-    }
   });
 
   it("delete sends EIP-712 identity headers and returns ok", async () => {
@@ -639,7 +602,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     });
 
     const page1 = await kv.listKeys({ cursor: "abc+/=", limit: 2 });
-    // Default apiVersion "1": the v1 canonical list path is /v1/kv (NOT /v1/list-keys).
+    // the v1 canonical list path is /v1/kv (NOT /v1/list-keys).
     expect(urls[0]).toBe(`${endpoint}/v1/kv?cursor=abc%2B%2F%3D&limit=2`);
     expect(page1.cursor).toBe("next+/=cur");
 

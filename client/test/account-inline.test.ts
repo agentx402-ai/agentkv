@@ -104,7 +104,7 @@ describe("account-key set() inline branch", () => {
   it("hard 402 with opInlinePayer → routes the whole op through the hook and returns its result", async () => {
     const inline = vi.fn(async (req: any) => {
       expect(req.method).toBe("POST");
-      // Default apiVersion "1": the fetch URL targets /v1/kv/<digest>.
+      // the fetch URL targets /v1/kv/<digest>.
       expect(req.url).toBe(`${endpoint}/v1/kv/${req.url.split("/kv/")[1]}`);
       expect(req.headers.Authorization).toBe(`Bearer ${AK}`);
       expect(req.headers["Idempotency-Key"]).toBeTruthy();

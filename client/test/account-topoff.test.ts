@@ -146,7 +146,7 @@ describe("account-key topoffPayer: reactive hard-402", () => {
 
     expect(payerCalls).toHaveLength(1);
     expect(payerCalls[0]).toEqual({
-      depositUrl: `${endpoint}/v1/account/deposit`, // default apiVersion "1"
+      depositUrl: `${endpoint}/v1/account/deposit`,
       accountKey: AK,
       amountUsd: 1,
       maxAmountAtomic: 1_000_000,
@@ -379,7 +379,7 @@ describe("account-key topoffPayer: deposit() aliasing", () => {
 
     expect(payerCalls).toHaveLength(1);
     expect(payerCalls[0]).toMatchObject({
-      depositUrl: `${endpoint}/v1/account/deposit`, // default apiVersion "1"
+      depositUrl: `${endpoint}/v1/account/deposit`,
       accountKey: AK,
       amountUsd: 2,
     });

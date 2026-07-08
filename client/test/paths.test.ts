@@ -45,18 +45,6 @@ describe("signed path == fetched pathname (divergence breaks identity auth)", ()
     expect(signedPaths[0]).toBe(fetchedPath); // the invariant
     expect(fetchedPath).toMatch(/^\/v1\/kv\//);
   });
-  it("legacy delete: signs and fetches the SAME pathname, no /v1", async () => {
-    const { signer, signedPaths } = recordingSigner();
-    const calls: { url: string }[] = [];
-    mockFetch(calls, { ok: true });
-    await new AgentKV({ signer, encryptionKey: ENC_KEY, endpoint, apiVersion: "legacy" }).delete(
-      "mykey",
-    );
-    const fetchedPath = new URL(calls[0].url).pathname;
-    expect(signedPaths[0]).toBe(fetchedPath);
-    expect(fetchedPath).toMatch(/^\/kv\//);
-    expect(fetchedPath).not.toMatch(/\/v1\//);
-  });
   it("v1 list-keys: signs and fetches /v1/kv; the query is on the URL only, never signed", async () => {
     const { signer, signedPaths } = recordingSigner();
     const calls: { url: string }[] = [];
@@ -66,20 +54,6 @@ describe("signed path == fetched pathname (divergence breaks identity auth)", ()
     expect(u.pathname).toBe("/v1/kv");
     expect(signedPaths[0]).toBe(u.pathname); // pathname only
     expect(u.searchParams.get("limit")).toBe("10"); // query rides on the URL, not the signature
-  });
-  it("legacy list-keys: signs and fetches /list-keys", async () => {
-    const { signer, signedPaths } = recordingSigner();
-    const calls: { url: string }[] = [];
-    mockFetch(calls, { items: [], cursor: null });
-    await new AgentKV({
-      signer,
-      encryptionKey: ENC_KEY,
-      endpoint,
-      apiVersion: "legacy",
-    }).listKeys();
-    const u = new URL(calls[0].url);
-    expect(u.pathname).toBe("/list-keys");
-    expect(signedPaths[0]).toBe(u.pathname);
   });
   it("v1 balance: signs and fetches /v1/credits/balance", async () => {
     const { signer, signedPaths } = recordingSigner();

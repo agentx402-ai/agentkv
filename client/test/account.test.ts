@@ -159,7 +159,7 @@ describe("AgentKV account-key header selection (mocked fetch)", () => {
     const name = "secret:openai";
     const items = [{ key: "digest1", key_name: await encrypt(km.keyName, name) }];
     mockFetch((u, init) => {
-      // Default apiVersion "1": the v1 canonical list path is /v1/kv (NOT /v1/list-keys).
+      // the v1 canonical list path is /v1/kv (NOT /v1/list-keys).
       expect(u).toContain("/v1/kv");
       expect(init.method).toBe("GET");
       return new Response(JSON.stringify({ items, cursor: null }), { status: 200 });
@@ -376,7 +376,7 @@ describe("AgentKV.fundAccount (payer funds, bearer owns)", () => {
     // (b) posted to /account/deposit (both the challenge probe and the paid retry).
     expect(calls).toHaveLength(2);
     for (const c of calls) {
-      expect(c.url).toBe(`${ENDPOINT}/v1/account/deposit`); // default apiVersion "1"
+      expect(c.url).toBe(`${ENDPOINT}/v1/account/deposit`);
       expect(c.init.method).toBe("POST");
     }
 

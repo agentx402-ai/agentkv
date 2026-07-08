@@ -128,14 +128,6 @@ export class AgentKV {
   readonly accountKey?: string;
   readonly endpoint: string;
   readonly network: string;
-  /**
-   * API version prefix: `"1"` (default) routes every signed path + fetch URL
-   * through `route()`/`kvRoute()` at `/v1/*`; `"legacy"` targets the
-   * pre-versioning paths. See `route()` below for the single-source-of-truth
-   * mechanism that keeps the EIP-712-signed pathname and the fetched URL from
-   * ever diverging.
-   */
-  private readonly apiVersion: "1" | "legacy";
   readonly maxSpendUsd?: number;
   readonly maxSessionSpendUsd?: number;
   /** Bounded internal retries on transient failures (network error / 5xx). */
@@ -170,7 +162,6 @@ export class AgentKV {
   constructor(opts: AgentKVOptions) {
     this.endpoint = opts.endpoint.replace(/\/+$/, "");
     this.network = opts.network ?? DEFAULT_NETWORK;
-    this.apiVersion = opts.apiVersion ?? "1";
     this.maxSpendUsd = opts.maxSpendUsd;
     this.maxSessionSpendUsd = opts.maxSessionSpendUsd;
     this.maxRetries = Math.max(0, Math.floor(opts.retries ?? 2));
@@ -617,16 +608,15 @@ export class AgentKV {
    * URL to fetch (`url`), so they can never diverge — a divergence silently
    * breaks identity auth: the worker verifies over the RECEIVED path and
    * recovers a phantom address if it differs from what the client signed.
-   * `legacy` is the pre-versioning pathname; `versioned` defaults to `/v1` +
-   * `legacy` (list-keys overrides it to `/v1/kv`). `query` is appended to `url`
+   * `base` is the un-prefixed pathname; the fetched/signed path is `/v1` + `base`
+   * (list-keys overrides it to `/v1/kv`). `query` is appended to `url`
    * ONLY — EIP-712 binds the pathname, never the query string.
    */
-  private route(spec: { legacy: string; versioned?: string; query?: string }): {
+  private route(spec: { base: string; versioned?: string; query?: string }): {
     path: string;
     url: string;
   } {
-    const versioned = spec.versioned ?? `${V1}${spec.legacy}`;
-    const path = this.apiVersion === "legacy" ? spec.legacy : versioned;
+    const path = spec.versioned ?? `${V1}${spec.base}`;
     const q = spec.query ? `?${spec.query}` : "";
     return { path, url: `${this.endpoint}${path}${q}` };
   }
@@ -635,7 +625,7 @@ export class AgentKV {
   // returns toBase64Url output — URL-safe [A-Za-z0-9_-], not hex), so no extra
   // encoding is needed and the signed path matches the fetched path byte-for-byte.
   private kvRoute(digest: string): { path: string; url: string } {
-    return this.route({ legacy: `/kv/${digest}` });
+    return this.route({ base: `/kv/${digest}` });
   }
 
   /**
@@ -1248,7 +1238,7 @@ export class AgentKV {
     if (opts.limit !== undefined) params.set("limit", String(opts.limit));
     const qs = params.toString();
     const { path, url } = this.route({
-      legacy: "/list-keys",
+      base: "/list-keys",
       versioned: `${V1}/kv`,
       query: qs || undefined,
     });
@@ -1288,7 +1278,7 @@ export class AgentKV {
    * else an EIP-712 identity signature.
    */
   async balance(): Promise<number> {
-    const { path, url } = this.route({ legacy: "/credits/balance" });
+    const { path, url } = this.route({ base: "/credits/balance" });
     // Route through fetchWithRetry (consistent with set/get/deposit): re-sign identity
     // with a FRESH nonce per attempt so a transient retry is not a nonce replay.
     const res = await this.fetchWithRetry(url, async () => ({
@@ -1401,7 +1391,7 @@ export class AgentKV {
     }
     try {
       await this.topoffPayer!({
-        depositUrl: this.route({ legacy: "/account/deposit" }).url,
+        depositUrl: this.route({ base: "/account/deposit" }).url,
         accountKey: this.accountKey!,
         amountUsd: amount,
         maxAmountAtomic,
@@ -1430,7 +1420,7 @@ export class AgentKV {
       throw new AgentKVError(
         "Account-key mode has no signing wallet. Fund this account with " +
           "fundAccount(payerKeyOrSigner, amountUsd), or via 'agentkv fund', or awal: " +
-          `awal x402 pay ${this.route({ legacy: "/account/deposit" }).url} --headers '{"Authorization":"Bearer <ak>"}'.`,
+          `awal x402 pay ${this.route({ base: "/account/deposit" }).url} --headers '{"Authorization":"Bearer <ak>"}'.`,
         "no_signer",
         0,
       );
@@ -1455,7 +1445,7 @@ export class AgentKV {
     // Caller-supplied key makes a caller-level retry of a settled-but-unacked deposit safe
     // (the pinned nonce dedupes server-side); else a fresh key per call.
     const opKey = opts.idempotencyKey ?? freshNonce();
-    const { url } = this.route({ legacy: "/credits/deposit" });
+    const { url } = this.route({ base: "/credits/deposit" });
     // First request triggers a 402 challenge; then we sign the payment.
     let res = await this.fetchWithRetry(url, () => ({
       method: "POST",
@@ -1549,7 +1539,7 @@ export class AgentKV {
     }
     const amountAtomic = amountUsd * 1_000_000;
 
-    const { url } = this.route({ legacy: "/account/deposit" });
+    const { url } = this.route({ base: "/account/deposit" });
     const bearer = buildBearerHeaders(this.accountKey);
     // Stable per-deposit key reused across the challenge->pay retry; pin the EIP-3009
     // nonce to it so a transient retry of a settled-but-unacked deposit reuses the
