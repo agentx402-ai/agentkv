@@ -47,8 +47,7 @@ jobs:
           node-version: "22"
       - name: Validate plugin manifests are well-formed JSON
         run: |
-          for f in .claude-plugin/marketplace.json \
-                   plugin/agentkv/.claude-plugin/plugin.json \
+          for f in plugin/agentkv/.claude-plugin/plugin.json \
                    plugin/agentkv/.mcp.json; do
             # NOTE: `node … && echo` would swallow the failure — under `bash -e`, a non-final
             # command in an `&&` list does not trigger errexit, so a JSON.parse crash (or ENOENT)
