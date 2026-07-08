@@ -201,6 +201,31 @@ describe("account-key topoffPayer: reactive hard-402", () => {
     expect(calls[1].headers.get("Idempotency-Key")).toBe(calls[0].headers.get("Idempotency-Key"));
   });
 
+  it("concurrent hard-402: the loser awaits the winner's top-off and retries (hook fires ONCE)", async () => {
+    let deposits = 0;
+    let deposited = false;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const kv = accountClient(async () => {
+      deposits++;
+      await gate; // hold the deposit until BOTH ops have hit their 402
+      deposited = true;
+    });
+    vi.stubGlobal("fetch", async () => (deposited ? json(200, SET_OK) : json(402, INSUFFICIENT)));
+
+    const p1 = kv.set("a", { v: 1 });
+    const p2 = kv.set("b", { v: 2 });
+    await new Promise((r) => setTimeout(r, 0)); // let both reach 402; the winner starts its deposit
+    release();
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true); // the loser did NOT surface the 402 — it awaited the sibling + retried
+    expect(deposits).toBe(1); // single-flight preserved: exactly one real deposit
+  });
+
   it("session-cap gating: a top-off that would exceed maxSessionSpendUsd is skipped (402 surfaces)", async () => {
     let payerCalls = 0;
     const kv = accountClient(

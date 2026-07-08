@@ -156,6 +156,11 @@ export class AgentKV {
   private knownCredits?: number;
   /** Synchronous single-flight guard: at most one in-flight top-off at a time. */
   private topoffInFlight = false;
+  /**
+   * The in-flight SYNCHRONOUS top-off deposit (account mode), published so a concurrent op
+   * that hits a hard 402 but can't claim the single-flight can await it and retry.
+   */
+  private topoffPromise: Promise<void> | undefined;
   /** Cached last `PAYMENT-REQUIRED` header — the template for a proactive single-shot. */
   private challengeTemplate?: string;
 
@@ -539,6 +544,21 @@ export class AgentKV {
   }
 
   /**
+   * Run a synchronous account-mode top-off while PUBLISHING its in-flight promise, so a
+   * concurrent op that hits a hard 402 (and can't claim the single-flight) can await THIS
+   * deposit and retry rather than surfacing the 402. The caller holds the single-flight claim.
+   */
+  private async runSharedTopoff(): Promise<void> {
+    const p = this.runAccountTopoff();
+    this.topoffPromise = p;
+    try {
+      await p;
+    } finally {
+      if (this.topoffPromise === p) this.topoffPromise = undefined;
+    }
+  }
+
+  /**
    * Detached async top-off (opt-in via `prepay.async`). When below the watermark
    * and no top-off is in flight, fire a deposit WITHOUT awaiting it in the op
    * path. Documented races: the balance read is point-in-time so the trigger can
@@ -715,7 +735,7 @@ export class AgentKV {
       // deliberate: it deposited nothing, so the hard-402 path may still try exactly one.
       if (flight.claimed && this.topoffPayer && this.topoffFitsSessionCap()) {
         try {
-          await this.runAccountTopoff();
+          await this.runSharedTopoff();
           toppedOff = true;
         } catch {
           // swallowed by design (proactive path); the op continues on remaining credits.
@@ -737,7 +757,14 @@ export class AgentKV {
       if (res.status === 402 && this.topoffPayer && !toppedOff) {
         if (!flight.claimed) flight.claimed = this.tryClaimTopoffOnFault();
         if (flight.claimed && this.topoffFitsSessionCap()) {
-          await this.runAccountTopoff();
+          await this.runSharedTopoff();
+          res = await sendBearer();
+          this.trackBalance(res);
+        } else if (this.topoffPromise) {
+          // A concurrent op won the single-flight and is depositing RIGHT NOW: rather than
+          // surface this 402 (a deposit is landing), await that sibling's top-off and retry
+          // the bearer ONCE — the same Idempotency-Key keeps it exactly-once.
+          await this.topoffPromise.catch(() => {});
           res = await sendBearer();
           this.trackBalance(res);
         }
