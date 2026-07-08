@@ -1,0 +1,55 @@
+{
+  "name": "agentkv",
+  "version": "0.1.0",
+  "description": "AgentKV: encrypted, x402-paid persistent memory for agents. Stores values client-side encrypted (AES-256-GCM) so the server is zero-knowledge. Wallet address is the namespace — no accounts or API keys needed.",
+  "license": "MIT",
+  "author": {
+    "name": "The AgentKV Authors",
+    "url": "https://github.com/agentx402-ai/agentkv"
+  },
+  "homepage": "https://github.com/agentx402-ai/agentkv",
+  "userConfig": {
+    "private_key": {
+      "type": "string",
+      "title": "Wallet private key (optional)",
+      "description": "EVM private key (hex, 0x-prefixed) for the wallet that pays and owns the namespace. Leave blank and AgentKV mints + manages a local wallet for you on first use (then fund + back it up).",
+      "sensitive": true,
+      "required": false
+    },
+    "endpoint": {
+      "type": "string",
+      "title": "AgentKV endpoint",
+      "description": "The AgentKV API endpoint. Defaults to the hosted service.",
+      "required": false,
+      "default": "https://api.agentx402.ai"
+    },
+    "network": {
+      "type": "string",
+      "title": "Network (optional)",
+      "description": "CAIP-2 network id: eip155:8453 (Base mainnet, default) or eip155:84532 (Base Sepolia testnet).",
+      "required": false,
+      "default": "eip155:8453"
+    },
+    "encryption_key": {
+      "type": "string",
+      "title": "Encryption key (optional, advanced)",
+      "description": "Override the AES-256-GCM key (hex). Defaults to a key derived (HKDF) from the private key.",
+      "sensitive": true,
+      "required": false
+    },
+    "max_spend_usd": {
+      "type": "number",
+      "title": "Max per-operation spend, USD (optional)",
+      "description": "Refuse any single operation that would cost more than this. Leave empty for no per-op cap.",
+      "required": false,
+      "min": 0
+    },
+    "max_session_spend_usd": {
+      "type": "number",
+      "title": "Max session spend, USD (optional)",
+      "description": "Refuse operations once cumulative spend across the whole MCP session exceeds this. Leave empty for no session cap.",
+      "required": false,
+      "min": 0
+    }
+  }
+}
