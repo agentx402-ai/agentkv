@@ -3,13 +3,9 @@
 // clientFromConfig (cli/src/config.ts) spreads only
 // { endpoint, network, maxSpendUsd, maxSessionSpendUsd } into every `new
 // AgentKV(...)` it builds, so every CLI-built client targets `/v1/*` by
-// construction. Asserted explicitly here so a change to clientFromConfig's
-// base spread (or the client's routing) is caught at the CLI boundary.
-//
-// Asserts against `kvRoute()` — the PRODUCTION path helper `set`/`get`/
-// `delete` actually call (see client/src/index.ts) — not the `url()` method,
-// which is dead code (no production caller; only
-// exercised by client/test/paths.test.ts) and a likely future removal.
+// construction. Asserted via `kvRoute()` — the path helper set/get/delete
+// actually call — so a change to clientFromConfig's base spread (or the client's
+// routing) is caught at the CLI boundary.
 import { describe, expect, it } from "vitest";
 import { clientFromConfig, type ResolvedConfig } from "../src/config";
 
