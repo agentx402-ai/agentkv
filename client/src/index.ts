@@ -122,7 +122,8 @@ export class AgentKV {
    * wallet, so this is the zero address (a documented sentinel: the account key —
    * not an address — is the identity; the server names storage by the key's hash).
    */
-  readonly address: `0x${string}`;
+  /** The wallet address (its namespace) in wallet/signer mode; `undefined` in account-key mode. */
+  readonly address: `0x${string}` | undefined;
   /** The raw `ak_…` bearer token in account-key mode; `undefined` otherwise. */
   readonly accountKey?: string;
   readonly endpoint: string;
@@ -273,9 +274,9 @@ export class AgentKV {
       }
       this.accountKey = opts.accountKey;
       this.signer = undefined;
-      // No wallet address; the account key (its server-side hash) is the namespace.
-      // Use the zero address as a documented sentinel — never sent on the wire.
-      this.address = "0x0000000000000000000000000000000000000000";
+      // No wallet address in account-key mode; the account key (its server-side hash)
+      // is the namespace. `address` is `undefined` (honest) — never sent on the wire.
+      this.address = undefined;
       this._ikm = normalizeEncryptionKey(opts.encryptionKey);
     } else if ("privateKey" in opts && opts.privateKey != null) {
       // Discriminate on the VALUE (not mere presence), mirroring the accountKey guard:
@@ -721,8 +722,9 @@ export class AgentKV {
         value: ciphertext,
         key_name: await encrypt(km.keyName, key),
       };
-      if (opts.ttl_days !== undefined) body.ttl_days = opts.ttl_days;
-      if (opts.strict_ttl !== undefined) body.strict_ttl = opts.strict_ttl;
+      // camelCase API option -> snake_case wire field.
+      if (opts.ttlDays !== undefined) body.ttl_days = opts.ttlDays;
+      if (opts.strictTtl !== undefined) body.strict_ttl = opts.strictTtl;
       const payload = JSON.stringify(body);
 
       const idempotencyKey = opts.idempotencyKey ?? freshNonce();

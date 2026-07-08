@@ -160,7 +160,7 @@ describe("runKv — set", () => {
     expect(client.set).not.toHaveBeenCalled();
   });
 
-  it("set with --ttl-days flag: opts.ttl_days is set", async () => {
+  it("set with --ttl-days flag: opts.ttlDays is set", async () => {
     const client = fakeClient();
     const code = await runCli(["set", "mykey", "42", "--ttl-days", "7"], {
       client: client as any,
@@ -168,10 +168,10 @@ describe("runKv — set", () => {
       stderr: () => {},
     });
     expect(code).toBe(0);
-    expect(client.set).toHaveBeenCalledWith("mykey", 42, { ttl_days: 7 });
+    expect(client.set).toHaveBeenCalledWith("mykey", 42, { ttlDays: 7 });
   });
 
-  it("set with --strict-ttl flag: opts.strict_ttl is true", async () => {
+  it("set with --strict-ttl flag: opts.strictTtl is true", async () => {
     const client = fakeClient();
     const code = await runCli(["set", "mykey", "42", "--strict-ttl"], {
       client: client as any,
@@ -179,7 +179,7 @@ describe("runKv — set", () => {
       stderr: () => {},
     });
     expect(code).toBe(0);
-    expect(client.set).toHaveBeenCalledWith("mykey", 42, { strict_ttl: true });
+    expect(client.set).toHaveBeenCalledWith("mykey", 42, { strictTtl: true });
   });
 
   it("set with --idempotency-key flag: opts.idempotencyKey is forwarded", async () => {
@@ -205,8 +205,8 @@ describe("runKv — set", () => {
     );
     expect(code).toBe(0);
     expect(client.set).toHaveBeenCalledWith("mykey", 42, {
-      ttl_days: 30,
-      strict_ttl: true,
+      ttlDays: 30,
+      strictTtl: true,
       idempotencyKey: "combo-key",
     });
   });

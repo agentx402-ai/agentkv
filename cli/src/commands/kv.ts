@@ -96,8 +96,8 @@ export async function runKv(
     }
   }
   const opts: any = {};
-  if (flags.ttlDays !== undefined) opts.ttl_days = flags.ttlDays;
-  if (flags.strictTtl) opts.strict_ttl = true;
+  if (flags.ttlDays !== undefined) opts.ttlDays = flags.ttlDays;
+  if (flags.strictTtl) opts.strictTtl = true;
   if (flags.idempotencyKey) opts.idempotencyKey = flags.idempotencyKey;
   printJson(io.stdout, await io.client.set(key, value, opts));
   return EXIT.OK;

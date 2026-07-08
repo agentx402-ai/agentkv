@@ -57,8 +57,8 @@ describe("AgentKV account-key constructor", () => {
     const kv = new AgentKV({ accountKey: AK, encryptionKey: ENC_A, endpoint: ENDPOINT });
     expect(kv.accountKey).toBe(AK);
     expect(kv.signer).toBeUndefined();
-    // No wallet address: the zero-address sentinel.
-    expect(kv.address).toBe("0x0000000000000000000000000000000000000000");
+    // No wallet address in account-key mode.
+    expect(kv.address).toBeUndefined();
   });
 
   it("throws on a malformed accountKey", () => {

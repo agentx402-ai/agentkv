@@ -27,7 +27,7 @@ export function buildMcpServer(
     set: (
       key: string,
       value: unknown,
-      opts?: { ttl_days?: number; strict_ttl?: boolean; idempotencyKey?: string },
+      opts?: { ttlDays?: number; strictTtl?: boolean; idempotencyKey?: string },
     ) => Promise<unknown>;
     get: (key: string, opts?: { idempotencyKey?: string }) => Promise<unknown>;
     delete: (key: string) => Promise<unknown>;
@@ -37,7 +37,7 @@ export function buildMcpServer(
       cursor?: string | null;
       limit?: number;
     }) => Promise<{ keys: string[]; cursor: string | null }>;
-    address: string;
+    address: string | undefined; // undefined in account-key mode (no wallet)
     /** Deployment base URL — used to point the account-mode funding message at the right server. */
     endpoint: string;
   },
@@ -91,8 +91,8 @@ export function buildMcpServer(
           type: "text" as const,
           text: JSON.stringify(
             await client.set(args.key, args.value, {
-              ttl_days: args.ttl_days,
-              strict_ttl: args.strict_ttl,
+              ttlDays: args.ttl_days,
+              strictTtl: args.strict_ttl,
               idempotencyKey: args.idempotency_key,
             }),
           ),
@@ -313,8 +313,8 @@ export function buildMcpServer(
       const r = readEnvSecret(args.env_var);
       if (!r.ok) return toolError(r.error, r.code);
       const res = await client.set(args.key, r.value, {
-        ttl_days: args.ttl_days,
-        strict_ttl: args.strict_ttl,
+        ttlDays: args.ttl_days,
+        strictTtl: args.strict_ttl,
         idempotencyKey: args.idempotency_key,
       });
       return { content: [{ type: "text" as const, text: JSON.stringify(res) }] };
@@ -343,8 +343,8 @@ export function buildMcpServer(
       const r = readFileSecret(args.path, { trim: args.trim });
       if (!r.ok) return toolError(r.error, r.code);
       const res = await client.set(args.key, r.value, {
-        ttl_days: args.ttl_days,
-        strict_ttl: args.strict_ttl,
+        ttlDays: args.ttl_days,
+        strictTtl: args.strict_ttl,
         idempotencyKey: args.idempotency_key,
       });
       return { content: [{ type: "text" as const, text: JSON.stringify(res) }] };

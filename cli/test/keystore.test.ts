@@ -196,7 +196,7 @@ describe("clientFromConfig — account-mode auto-detect", () => {
       const client = clientFromConfig({ ...cfgBase, accountKey: AK, encryptionKey: ENC }, { env });
       expect((client as any).accountKey).toBe(AK); // raw bearer is the identity
       expect((client as any).signer).toBeUndefined(); // managed account can't sign
-      expect(client.address).toBe("0x0000000000000000000000000000000000000000"); // sentinel
+      expect(client.address).toBeUndefined(); // no wallet address in account-key mode
     } finally {
       clean(env);
     }

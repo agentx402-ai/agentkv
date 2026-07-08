@@ -56,7 +56,7 @@ describe("AgentKV construction", () => {
   it("builds the viem account and exposes .signer / .address", () => {
     const kv = new AgentKV({ privateKey: PK_A, endpoint: "https://api.agentx402.ai" });
     const expected = privateKeyToAccount(PK_A);
-    expect(kv.address.toLowerCase()).toBe(expected.address.toLowerCase());
+    expect(kv.address?.toLowerCase()).toBe(expected.address.toLowerCase());
     // signer is optional now (undefined in account-key mode); this is wallet mode.
     expect(kv.signer?.address).toBe(expected.address);
   });
@@ -214,7 +214,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
       capturedBody = JSON.parse(init.body as string);
       return new Response(JSON.stringify({ ok: true, expires_at: "x" }), { status: 200 });
     });
-    await kv.set("k", "v", { ttl_days: 1, strict_ttl: true });
+    await kv.set("k", "v", { ttlDays: 1, strictTtl: true });
     expect(capturedBody.ttl_days).toBe(1);
     expect(capturedBody.strict_ttl).toBe(true);
   });

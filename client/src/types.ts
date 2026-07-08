@@ -161,9 +161,9 @@ export type AgentKVOptions = AgentKVCommon &
 /** Per-write options. */
 export interface SetOptions {
   /** Time-to-live in days (server default 90). */
-  ttl_days?: number;
+  ttlDays?: number;
   /** If true, reads do not extend expiry (server default false). */
-  strict_ttl?: boolean;
+  strictTtl?: boolean;
   /**
    * Stable key identifying this logical write, reused across retries so a
    * retried set() (after a crash/timeout) is exactly-once: the server hits its
