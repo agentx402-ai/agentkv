@@ -676,6 +676,199 @@ export class AgentKV {
   }
 
   /**
+   * Shared money/transport orchestrator behind set() and getInternal() — the single copy of
+   * the flow both share: account-key (bearer) mode with proactive + hard-402 top-off and the
+   * inline-payer path; wallet mode with the proactive single-shot, credit path, and 402
+   * pay-and-retry — including the single-flight top-off accounting and settled-txHash spend
+   * gating. Per-op differences (method/body, credit cost, 404 handling, success/inline
+   * parsing) come from `spec`. The CALLER must claim the single-flight top-off SYNCHRONOUSLY
+   * (before any await) and pass it in `flight`; it may be re-claimed here on a cold-start hard
+   * 402, and the caller's `finally` releases it.
+   */
+  private async performOp<T>(
+    flight: { claimed: boolean },
+    spec: {
+      method: "POST" | "GET";
+      path: string;
+      url: string;
+      idempotencyKey: string;
+      creditCostUsd: number;
+      label: string;
+      buildRequest: (headers: Record<string, string>) => RequestInit;
+      parseSuccess: (res: Response) => Promise<T>;
+      parseInline: (inlineRes: OpInlineResponse) => Promise<T>;
+      /** Return value for a 404 (get: `{ value: null }`); omitted for set (404 -> error). */
+      notFound?: () => T;
+    },
+  ): Promise<T> {
+    const { path, url, idempotencyKey, creditCostUsd, label } = spec;
+
+    // Account-key mode: bearer auth debits prepaid credits server-side. No x402/EIP-712 — a
+    // 402 (insufficient credits) carries no challenge. Cap the spend at the credit cost.
+    if (this.accountKey) {
+      // Request-scoped: true once a top-off DEPOSIT actually succeeded for THIS op — bounds
+      // spend to at most one real on-chain deposit per op (see the hard-402 guard below).
+      let toppedOff = false;
+      // Proactive watermark top-off (single-flight claim held): delegate to the payer hook. A
+      // failure here is NON-fatal (credits may still cover the op; the hard-402 path below
+      // surfaces a real shortfall). Not setting toppedOff on a failed proactive deposit is
+      // deliberate: it deposited nothing, so the hard-402 path may still try exactly one.
+      if (flight.claimed && this.topoffPayer && this.topoffFitsSessionCap()) {
+        try {
+          await this.runAccountTopoff();
+          toppedOff = true;
+        } catch {
+          // swallowed by design (proactive path); the op continues on remaining credits.
+        }
+      }
+      this.maybeAsyncTopoff();
+      this.assertSpend(creditCostUsd);
+      const sendBearer = () =>
+        this.fetchWithRetry(url, () =>
+          spec.buildRequest({
+            "Idempotency-Key": idempotencyKey,
+            ...buildBearerHeaders(this.accountKey!),
+          }),
+        );
+      let res = await sendBearer();
+      this.trackBalance(res);
+      // Hard 402: with a payer hook, buy a top-off and retry ONCE (same key = exactly-once).
+      // Skipped after a successful proactive deposit (`!toppedOff`) so at most one deposit/op.
+      if (res.status === 402 && this.topoffPayer && !toppedOff) {
+        if (!flight.claimed) flight.claimed = this.tryClaimTopoffOnFault();
+        if (flight.claimed && this.topoffFitsSessionCap()) {
+          await this.runAccountTopoff();
+          res = await sendBearer();
+          this.trackBalance(res);
+        }
+      }
+      // Inline opt-in: route the WHOLE op through an external x402 transport (e.g. awal)
+      // instead of a credit top-off. Mutually exclusive with topoffPayer PER OP.
+      if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
+        // Bound by the caller's per-op cap and pre-reserve against the session cap BEFORE
+        // paying — the credit-cost pre-flight only checked the credit price, not real USDC.
+        const inlineCeilingUsd = this.inlineOpCeilingUsd();
+        this.assertSpend(inlineCeilingUsd);
+        const reqInit = spec.buildRequest({
+          "Idempotency-Key": idempotencyKey,
+          ...buildBearerHeaders(this.accountKey!),
+        });
+        const inlineRes = await this.opInlinePayer({
+          url,
+          method: spec.method,
+          body: reqInit.body as string | undefined,
+          headers: reqInit.headers as Record<string, string>,
+          // The hook MUST NOT settle more than the effective per-op ceiling.
+          maxAmountAtomic: Math.round(inlineCeilingUsd * 1_000_000),
+        });
+        if (inlineRes.status === 404 && spec.notFound) return spec.notFound();
+        if (inlineRes.status < 200 || inlineRes.status >= 300) {
+          throw this.errorFromBody(inlineRes.status, inlineRes.body, label);
+        }
+        this.recordSpend(this.inlineSettledAmountUsd(inlineRes.headers) ?? creditCostUsd);
+        return spec.parseInline(inlineRes);
+      }
+      if (res.status === 404 && spec.notFound) return spec.notFound();
+      if (!res.ok) throw await this.asError(res, label);
+      this.recordSpend(creditCostUsd);
+      return spec.parseSuccess(res);
+    }
+
+    // 0) Wallet-mode proactive single-shot top-off (claim held): pay a >=$1 top-off on THIS op
+    //    from the cached challenge template. Cold start (no template) -> identity path below.
+    if (flight.claimed && this.challengeTemplate && this.topoffFitsSessionCap()) {
+      let paymentSignature: string | undefined;
+      try {
+        paymentSignature = await buildPaymentHeader(this.requireSigner(), this.challengeTemplate, {
+          amountAtomic: this.topoffAtomic,
+          expectedNetwork: this.network,
+          // Pin the nonce to the op's idempotency key so a retry reuses the auth and the
+          // server dedupes the mint + the op.
+          nonce: nonceFromIdempotencyKey(idempotencyKey),
+        });
+      } catch {
+        // Corrupted/stale cached template or a network-pin failure: clear it and fall through
+        // to the identity path (the hard-402 fallback refreshes the template).
+        this.challengeTemplate = undefined;
+      }
+      if (paymentSignature !== undefined) {
+        const res = await this.fetchWithRetry(url, () =>
+          spec.buildRequest({
+            "Idempotency-Key": idempotencyKey,
+            "PAYMENT-SIGNATURE": paymentSignature as string,
+          }),
+        );
+        this.trackBalance(res);
+        if (res.status === 404 && spec.notFound) return spec.notFound();
+        // A 402 means the cached template was stale (trackBalance just refreshed it): fall
+        // through to the identity/credit path, self-healing on THIS call (same held claim).
+        if (res.status !== 402) {
+          if (!res.ok) throw await this.asError(res, label);
+          // Count the top-off ONLY if it actually settled on-chain (non-empty PAYMENT-RESPONSE
+          // txHash) — a credit-served op settles nothing; single-flight => at most once.
+          if (this.settledTxHash(res)) this.recordSpend(this.prepay!.topoff);
+          return spec.parseSuccess(res);
+        }
+      }
+    }
+
+    // Async mode: kick off a detached background deposit (opt-in, not awaited).
+    this.maybeAsyncTopoff();
+
+    // 1) Credit path: an EIP-712 identity signature spends pre-paid credits with no on-chain
+    //    settlement. Re-sign identity with a FRESH nonce per transient retry; the stable
+    //    Idempotency-Key carries dedup.
+    let res = await this.fetchWithRetry(url, async () =>
+      spec.buildRequest({
+        "Idempotency-Key": idempotencyKey,
+        ...(await this.identityHeaders(spec.method, path)),
+      }),
+    );
+    this.trackBalance(res);
+
+    // 2) Insufficient credits -> 402 x402 challenge: pay and retry with the same key.
+    if (res.status === 402) {
+      const challenge = res.headers.get("PAYMENT-REQUIRED");
+      if (!challenge) {
+        throw await this.asError(res, "payment required but no PAYMENT-REQUIRED challenge");
+      }
+      // Prepay hard-402 fallback: pay a TOP-OFF (>=$1) instead of the op price. Claim the
+      // single-flight now if we didn't already (cold start). Over the session cap -> pay-per-op.
+      if (!flight.claimed) flight.claimed = this.tryClaimTopoffOnFault();
+      const topoffHere = flight.claimed && this.topoffFitsSessionCap();
+      const usd = topoffHere
+        ? this.prepay!.topoff
+        : challengePriceUsd(challenge, undefined, this.network);
+      if (!topoffHere) {
+        this.assertOpPriceCeiling(usd);
+        this.assertSpend(usd);
+      }
+      // Pin the EIP-3009 nonce to the idempotency key so a retried op reuses the same
+      // authorization and the server dedupes. Re-send the identical signed header on retry.
+      const paymentSignature = await buildPaymentHeader(this.requireSigner(), challenge, {
+        amountAtomic: topoffHere ? this.topoffAtomic : undefined,
+        expectedNetwork: this.network,
+        nonce: nonceFromIdempotencyKey(idempotencyKey),
+      });
+      res = await this.fetchWithRetry(url, () =>
+        spec.buildRequest({
+          "Idempotency-Key": idempotencyKey,
+          "PAYMENT-SIGNATURE": paymentSignature,
+        }),
+      );
+      this.trackBalance(res);
+      // Settlement gate (L3): count a TOP-OFF only when it settled (non-empty txHash); a
+      // concurrent sibling can mint credits between the 402 and the retry (txHash ""). The
+      // op-price branch (!topoffHere) stays on res.ok — it is the real op cost.
+      if (res.ok && (!topoffHere || this.settledTxHash(res))) this.recordSpend(usd);
+    }
+
+    if (res.status === 404 && spec.notFound) return spec.notFound();
+    if (!res.ok) throw await this.asError(res, label);
+    return spec.parseSuccess(res);
+  }
+
+  /**
    * Write an encrypted value. The value is JSON-stringified and AES-256-GCM
    * encrypted client-side; the server only ever stores ciphertext. `null` and
    * `undefined` are rejected (`invalid_value`) so a `null` from get() unambiguously
@@ -687,8 +880,8 @@ export class AgentKV {
   async set(key: string, value: unknown, opts: SetOptions = {}): Promise<SetResult> {
     // CRITICAL single-flight: claim a proactive top-off SYNCHRONOUSLY, before any
     // await (encryption etc.). Exactly one concurrent op below the watermark wins.
-    // `claimedTopoff` may also be set later at a hard 402 (cold-start fallback).
-    let claimedTopoff = this.tryClaimTopoff();
+    // The claim may also be taken later at a hard 402 (cold-start fallback) inside performOp().
+    const flight = { claimed: this.tryClaimTopoff() };
     try {
       const plaintext = JSON.stringify(value);
       // Reject null/undefined (and anything that stringifies to undefined: functions,
@@ -720,235 +913,23 @@ export class AgentKV {
       const idempotencyKey = opts.idempotencyKey ?? freshNonce();
       const { path, url } = this.kvRoute(digest);
 
-      // Account-key mode: bearer auth debits prepaid credits server-side. SKIP all
-      // x402/EIP-712/402-fallback logic — a managed account has no wallet to pay
-      // with, so a 402 (insufficient credits) carries NO challenge and surfaces as
-      // an error. The value is still encrypted with the local key (above). Apply
-      // the per-op/session spend cap using the WRITE credit cost so a runaway agent
-      // can't drain prepaid credits uncapped.
-      if (this.accountKey) {
-        // Request-scoped guard: true only once a top-off DEPOSIT has actually
-        // succeeded for THIS op (proactive or hard-402). Bounds spend to at most
-        // one real on-chain deposit per op — see the hard-402 guard below.
-        let toppedOff = false;
-        // Proactive watermark top-off (single-flight claim won at the top of this
-        // method): delegate the deposit to the payer hook. Failure here is NON-fatal
-        // — remaining credits may still cover the op, and the hard-402 fallback
-        // below surfaces a real shortfall. A successful hook records its own spend.
-        if (claimedTopoff && this.topoffPayer && this.topoffFitsSessionCap()) {
-          try {
-            await this.runAccountTopoff();
-            toppedOff = true;
-          } catch {
-            // swallowed by design (proactive path); the op continues on credits.
-            // NOT setting toppedOff here is deliberate: a failed proactive top-off
-            // deposited nothing, so the hard-402 path below must still be allowed
-            // to attempt exactly one real top-off.
-          }
-        }
-        // Async mode: kick off a detached background top-off via the payer hook
-        // (opt-in, not awaited). No-op while a single-flight claim is held, or
-        // outside prepay.async — mirrors the wallet-mode call site below.
-        this.maybeAsyncTopoff();
-        this.assertSpend(ACCOUNT_WRITE_USD);
-        const sendBearer = () =>
-          this.fetchWithRetry(url, () => ({
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "Idempotency-Key": idempotencyKey,
-              ...buildBearerHeaders(this.accountKey!),
-            },
-            body: payload,
-          }));
-        let res = await sendBearer();
-        this.trackBalance(res);
-        // Hard 402 (insufficient credits): with a payer hook, buy a top-off via the
-        // hook and retry ONCE with the same Idempotency-Key (exactly-once). A hook
-        // failure here IS fatal for the op. Without a hook (or with the single-flight
-        // already held elsewhere / over the session cap) the 402 surfaces unchanged.
-        // Skipped entirely when a proactive top-off already deposited for this op
-        // (`!toppedOff`): a residual 402 right after a successful proactive deposit
-        // (settlement lag / a concurrent drain on this ak_ bearer) must surface as an
-        // error rather than fire a SECOND real on-chain deposit — at most one deposit
-        // per op.
-        if (res.status === 402 && this.topoffPayer && !toppedOff) {
-          if (!claimedTopoff) claimedTopoff = this.tryClaimTopoffOnFault();
-          if (claimedTopoff && this.topoffFitsSessionCap()) {
-            await this.runAccountTopoff();
-            res = await sendBearer();
-            this.trackBalance(res);
-          }
-        }
-        // Inline opt-in: route the WHOLE op through an external x402 transport
-        // (e.g. awal) instead of a credit top-off. Mutually exclusive with
-        // topoffPayer PER OP — `!this.topoffPayer` means this only ever fires
-        // when no topoffPayer is configured at all, so the two hooks can never
-        // both act on the same op (see client/README.md precedence).
-        if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
-          // Bound the inline hook by the caller's configured per-op cap (or the built-in
-          // ceiling), and pre-reserve it against the session cap BEFORE paying — the
-          // credit-cost pre-flight above only checked the $0.0005 credit price, so without
-          // this an inline op could settle real USDC above maxSpendUsd / the session cap.
-          const inlineCeilingUsd = this.inlineOpCeilingUsd();
-          this.assertSpend(inlineCeilingUsd);
-          const inlineRes = await this.opInlinePayer({
-            url,
-            method: "POST",
-            body: payload,
-            headers: {
-              "content-type": "application/json",
-              "Idempotency-Key": idempotencyKey,
-              ...buildBearerHeaders(this.accountKey!),
-            },
-            // The hook MUST NOT settle more than the effective per-op ceiling.
-            maxAmountAtomic: Math.round(inlineCeilingUsd * 1_000_000),
-          });
-          if (inlineRes.status < 200 || inlineRes.status >= 300) {
-            throw this.errorFromBody(inlineRes.status, inlineRes.body, "set failed");
-          }
-          // Real USDC moved via the hook's own x402 flow (not the credit ledger
-          // asserted above): record the actual settled amount when signalled,
-          // else fall back to the credit-equivalent op price.
-          this.recordSpend(this.inlineSettledAmountUsd(inlineRes.headers) ?? ACCOUNT_WRITE_USD);
-          return JSON.parse(inlineRes.body) as SetResult;
-        }
-        if (!res.ok) throw await this.asError(res, "set failed");
-        this.recordSpend(ACCOUNT_WRITE_USD);
-        return (await res.json()) as SetResult;
-      }
-
-      // 0) Proactive single-shot top-off (claim won): the server now mints +
-      //    serves atomically, so we pay a >=$1 top-off on THIS op (no preflight)
-      //    from the cached challenge template. If no template is cached yet (cold
-      //    start), fall through to the identity path; the resulting 402 caches the
-      //    template and the hard-402 fallback tops off this op.
-      if (claimedTopoff && this.challengeTemplate && this.topoffFitsSessionCap()) {
-        // Build the single-shot payment from the CACHED template. If that template is
-        // corrupted/truncated (bad base64 or JSON) or fails the network pin, don't fail the
-        // op: clear it and fall through to the identity/credit path (the hard-402 fallback
-        // refreshes the template). Mirrors the existing 402 stale-template self-heal below.
-        let paymentSignature: string | undefined;
-        try {
-          paymentSignature = await buildPaymentHeader(
-            this.requireSigner(),
-            this.challengeTemplate,
-            {
-              amountAtomic: this.topoffAtomic,
-              expectedNetwork: this.network,
-              // Pin the nonce to the op's idempotency key so a network retry of this
-              // single-shot reuses the auth and the server dedupes the mint + the op.
-              nonce: nonceFromIdempotencyKey(idempotencyKey),
-            },
-          );
-        } catch {
-          this.challengeTemplate = undefined;
-        }
-        if (paymentSignature !== undefined) {
-          const res = await this.fetchWithRetry(url, () => ({
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "Idempotency-Key": idempotencyKey,
-              "PAYMENT-SIGNATURE": paymentSignature,
-            },
-            body: payload,
-          }));
-          this.trackBalance(res);
-          // A 402 here means the CACHED challenge template was stale/rejected (it drifted,
-          // or the price changed since it was cached). Do NOT fail the op: trackBalance()
-          // just refreshed challengeTemplate from this 402, so fall through to the
-          // identity/credit path below. We still hold the single-flight claim, so its
-          // hard-402 fallback re-signs the top-off (SAME pinned nonce) against the FRESH
-          // challenge — self-healing on THIS call rather than erroring out. A non-402
-          // failure is a real error (throw); a success returns here.
-          if (res.status !== 402) {
-            if (!res.ok) throw await this.asError(res, "set failed");
-            // Count the top-off ONLY if it actually settled on-chain. When existing credits
-            // already cover the op, the server serves from credits and never settles the
-            // attached auth (empty PAYMENT-RESPONSE txHash) — recording it would inflate
-            // sessionSpentUsd for USDC that never moved (L3). Single-flight => at most once.
-            if (this.settledTxHash(res)) this.recordSpend(this.prepay!.topoff);
-            return (await res.json()) as SetResult;
-          }
-        }
-      }
-
-      // Async mode: kick off a detached background deposit (opt-in, not awaited).
-      // No-op while a single-flight claim is held (e.g. a proactive 402 fell through).
-      this.maybeAsyncTopoff();
-
-      // 1) Credit path first: an EIP-712 identity signature lets the server spend
-      //    pre-paid credits without an on-chain settlement. Re-sign identity with a
-      //    FRESH nonce on each transient retry — the stable Idempotency-Key carries
-      //    dedup (the server matches it before marking the identity nonce used), so
-      //    reusing the identity nonce would only risk a spurious 401 in a crash-window retry.
-      let res = await this.fetchWithRetry(url, async () => ({
+      return await this.performOp<SetResult>(flight, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "Idempotency-Key": idempotencyKey,
-          ...(await this.identityHeaders("POST", path)),
-        },
-        body: payload,
-      }));
-      this.trackBalance(res);
-
-      // 2) Insufficient credits -> 402 with an x402 challenge: pay and retry. The
-      //    same Idempotency-Key is reused so the write stays exactly-once.
-      if (res.status === 402) {
-        const challenge = res.headers.get("PAYMENT-REQUIRED");
-        if (!challenge) {
-          throw await this.asError(res, "payment required but no PAYMENT-REQUIRED challenge");
-        }
-        // Prepay hard-402 fallback: pay a TOP-OFF (>=$1) instead of the op price.
-        // If we didn't already hold the single-flight (cold start: no template,
-        // so no proactive claim), claim it now so concurrent 402s don't double
-        // top off. Over the session cap -> downgrade to pay-per-op (no throw).
-        if (!claimedTopoff) claimedTopoff = this.tryClaimTopoffOnFault();
-        const topoffHere = claimedTopoff && this.topoffFitsSessionCap();
-        const usd = topoffHere
-          ? this.prepay!.topoff
-          : challengePriceUsd(challenge, undefined, this.network);
-        if (!topoffHere) {
-          this.assertOpPriceCeiling(usd);
-          this.assertSpend(usd);
-        }
-        // Pin the EIP-3009 nonce to the idempotency key so a retried set() with
-        // the same key reuses the same authorization and the server dedupes.
-        const paymentSignature = await buildPaymentHeader(this.requireSigner(), challenge, {
-          amountAtomic: topoffHere ? this.topoffAtomic : undefined,
-          expectedNetwork: this.network,
-          nonce: nonceFromIdempotencyKey(idempotencyKey),
-        });
-        // Re-send the IDENTICAL signed header on a transient retry: the pinned
-        // EIP-3009 nonce makes the server dedupe (idempotency record, or the
-        // authorization already being used on-chain), so the settle happens exactly once.
-        res = await this.fetchWithRetry(url, () => ({
+        path,
+        url,
+        idempotencyKey,
+        creditCostUsd: ACCOUNT_WRITE_USD,
+        label: "set failed",
+        buildRequest: (headers) => ({
           method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "Idempotency-Key": idempotencyKey,
-            "PAYMENT-SIGNATURE": paymentSignature,
-          },
+          headers: { "content-type": "application/json", ...headers },
           body: payload,
-        }));
-        this.trackBalance(res);
-        // Same settlement gate as the proactive path (L3): a TOP-OFF counts only if it
-        // actually settled (non-empty PAYMENT-RESPONSE txHash). Under concurrent prepay a
-        // sibling op can mint credits between this 402 and the paid retry, so the server
-        // may serve THIS op from credits (txHash "") and mint nothing — recording the full
-        // top-off then would re-introduce the over-count. The op-price branch (!topoffHere)
-        // stays on res.ok: it is the actual op cost, not a credit mint that may be skipped.
-        if (res.ok && (!topoffHere || this.settledTxHash(res))) this.recordSpend(usd);
-      }
-
-      if (!res.ok) {
-        throw await this.asError(res, "set failed");
-      }
-      return (await res.json()) as SetResult;
+        }),
+        parseSuccess: async (res) => (await res.json()) as SetResult,
+        parseInline: async (inlineRes) => JSON.parse(inlineRes.body) as SetResult,
+      });
     } finally {
-      if (claimedTopoff) this.topoffInFlight = false;
+      if (flight.claimed) this.topoffInFlight = false;
     }
   }
 
@@ -993,8 +974,8 @@ export class AgentKV {
   ): Promise<{ value: T | null; usage?: UsageBlock }> {
     // CRITICAL single-flight: claim a proactive top-off SYNCHRONOUSLY, before any
     // await. Exactly one concurrent op below the watermark wins; losers read.
-    // `claimedTopoff` may also be set later at a hard 402 (cold-start fallback).
-    let claimedTopoff = this.tryClaimTopoff();
+    // The claim may also be taken later at a hard 402 (cold-start fallback) inside performOp().
+    const flight = { claimed: this.tryClaimTopoff() };
     try {
       const digest = hashKey((await this.getKeyMaterial()).mac, key);
       const { path, url } = this.kvRoute(digest);
@@ -1004,200 +985,26 @@ export class AgentKV {
       // (the read idempotency record returns the cached value) instead of charging
       // twice. Two SEPARATE get()s still use distinct keys (separately charged).
       const idempotencyKey = opts.idempotencyKey ?? freshNonce();
-      const idemHeaders: Record<string, string> = { "Idempotency-Key": idempotencyKey };
-
-      // Account-key mode: bearer auth debits prepaid credits server-side. SKIP all
-      // x402/EIP-712/402-fallback logic — a 402 (insufficient credits) carries NO
-      // challenge and surfaces as an error. The returned value is still decrypted
-      // with the local key. Cap the spend using the READ credit cost.
-      if (this.accountKey) {
-        // Request-scoped guard: true only once a top-off DEPOSIT has actually
-        // succeeded for THIS op (proactive or hard-402). Bounds spend to at most
-        // one real on-chain deposit per op — see the hard-402 guard below.
-        let toppedOff = false;
-        // Proactive watermark top-off (single-flight claim won at the top of this
-        // method): delegate the deposit to the payer hook. Failure here is NON-fatal
-        // — remaining credits may still cover the op, and the hard-402 fallback
-        // below surfaces a real shortfall. A successful hook records its own spend.
-        if (claimedTopoff && this.topoffPayer && this.topoffFitsSessionCap()) {
-          try {
-            await this.runAccountTopoff();
-            toppedOff = true;
-          } catch {
-            // swallowed by design (proactive path); the op continues on credits.
-            // NOT setting toppedOff here is deliberate: a failed proactive top-off
-            // deposited nothing, so the hard-402 path below must still be allowed
-            // to attempt exactly one real top-off.
-          }
-        }
-        // Async mode: kick off a detached background top-off via the payer hook
-        // (opt-in, not awaited). No-op while a single-flight claim is held, or
-        // outside prepay.async — mirrors the wallet-mode call site below.
-        this.maybeAsyncTopoff();
-        this.assertSpend(ACCOUNT_READ_USD);
-        const sendBearer = () =>
-          this.fetchWithRetry(url, () => ({
-            method: "GET",
-            headers: { ...idemHeaders, ...buildBearerHeaders(this.accountKey!) },
-          }));
-        let res = await sendBearer();
-        this.trackBalance(res);
-        // Hard-402 fallback: mirror of set() — hook top-off, single retry, same key.
-        // Skipped entirely when a proactive top-off already deposited for this op
-        // (`!toppedOff`): a residual 402 right after a successful proactive deposit
-        // must surface as an error rather than fire a SECOND real on-chain deposit —
-        // at most one deposit per op.
-        if (res.status === 402 && this.topoffPayer && !toppedOff) {
-          if (!claimedTopoff) claimedTopoff = this.tryClaimTopoffOnFault();
-          if (claimedTopoff && this.topoffFitsSessionCap()) {
-            await this.runAccountTopoff();
-            res = await sendBearer();
-            this.trackBalance(res);
-          }
-        }
-        // Inline opt-in: mirror of the set() branch above (see its comment for
-        // the topoffPayer precedence rule).
-        if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
-          // Bound by the caller's per-op cap and pre-reserve against the session cap
-          // before paying (see the set() inline branch for the rationale).
-          const inlineCeilingUsd = this.inlineOpCeilingUsd();
-          this.assertSpend(inlineCeilingUsd);
-          const inlineRes = await this.opInlinePayer({
-            url,
-            method: "GET",
-            headers: { ...idemHeaders, ...buildBearerHeaders(this.accountKey!) },
-            // The hook MUST NOT settle more than the effective per-op ceiling.
-            maxAmountAtomic: Math.round(inlineCeilingUsd * 1_000_000),
-          });
-          if (inlineRes.status === 404) return { value: null };
-          if (inlineRes.status < 200 || inlineRes.status >= 300) {
-            throw this.errorFromBody(inlineRes.status, inlineRes.body, "get failed");
-          }
-          this.recordSpend(this.inlineSettledAmountUsd(inlineRes.headers) ?? ACCOUNT_READ_USD);
-          const data = JSON.parse(inlineRes.body) as { value: string; usage?: UsageBlock };
-          const decryptedText = await this.decryptValue(data.value, key);
-          return { value: JSON.parse(decryptedText) as T, usage: data.usage };
-        }
-        if (res.status === 404) return { value: null };
-        if (!res.ok) throw await this.asError(res, "get failed");
-        this.recordSpend(ACCOUNT_READ_USD);
-        const data = (await res.json()) as { value: string; usage?: UsageBlock };
+      const parseBody = async (raw: string): Promise<{ value: T | null; usage?: UsageBlock }> => {
+        const data = JSON.parse(raw) as { value: string; usage?: UsageBlock };
         const decryptedText = await this.decryptValue(data.value, key);
         return { value: JSON.parse(decryptedText) as T, usage: data.usage };
-      }
+      };
 
-      // 0) Proactive single-shot top-off (claim won): pay a >=$1 top-off on THIS
-      //    read (no preflight) from the cached template. A stable idempotency key
-      //    pins the EIP-3009 nonce so a retry reuses the auth and the server
-      //    dedupes the mint + the op. Cold start (no template) -> identity path.
-      if (claimedTopoff && this.challengeTemplate && this.topoffFitsSessionCap()) {
-        // Self-heal on a corrupted/stale cached template or a network-pin failure: clear it
-        // and fall through to the identity path (mirror of set()); don't fail a read that
-        // credits could still serve.
-        let paymentSignature: string | undefined;
-        try {
-          paymentSignature = await buildPaymentHeader(
-            this.requireSigner(),
-            this.challengeTemplate,
-            {
-              amountAtomic: this.topoffAtomic,
-              expectedNetwork: this.network,
-              nonce: nonceFromIdempotencyKey(idempotencyKey),
-            },
-          );
-        } catch {
-          this.challengeTemplate = undefined;
-        }
-        if (paymentSignature !== undefined) {
-          const res = await this.fetchWithRetry(url, () => ({
-            method: "GET",
-            headers: { "Idempotency-Key": idempotencyKey, "PAYMENT-SIGNATURE": paymentSignature },
-          }));
-          this.trackBalance(res);
-          if (res.status === 404) return { value: null };
-          // A 402 here means the cached challenge template was stale/rejected: fall through
-          // to the identity/credit path below (self-healing on THIS call; see set()). We
-          // still hold the single-flight claim, so its hard-402 fallback re-signs the
-          // top-off (same pinned nonce) against the FRESH challenge. Non-402 => real error.
-          if (res.status !== 402) {
-            if (!res.ok) throw await this.asError(res, "get failed");
-            // Count the top-off ONLY if it actually settled on-chain (non-empty
-            // PAYMENT-RESPONSE txHash); a read served from existing credits settles nothing
-            // and must not inflate session spend (L3). Mirror of the set() path.
-            if (this.settledTxHash(res)) this.recordSpend(this.prepay!.topoff);
-            const data = (await res.json()) as { value: string; usage?: UsageBlock };
-            const decryptedText = await this.decryptValue(data.value, key);
-            return { value: JSON.parse(decryptedText) as T, usage: data.usage };
-          }
-        }
-      }
-
-      // Async mode: kick off a detached background deposit (opt-in, not awaited).
-      this.maybeAsyncTopoff();
-
-      // 1) Credit path first: identity-signed read spends pre-paid credits.
-      //    Re-sign identity (FRESH nonce) per transient retry; the stable
-      //    Idempotency-Key carries dedup.
-      let res = await this.fetchWithRetry(url, async () => ({
+      return await this.performOp<{ value: T | null; usage?: UsageBlock }>(flight, {
         method: "GET",
-        headers: {
-          ...(await this.identityHeaders("GET", path)),
-          ...idemHeaders,
-        },
-      }));
-      this.trackBalance(res);
-
-      // 2) Insufficient credits -> 402 with an x402 challenge: pay and retry,
-      //    pinning the nonce to the idempotency key so a retry reuses the auth.
-      if (res.status === 402) {
-        const challenge = res.headers.get("PAYMENT-REQUIRED");
-        if (!challenge) {
-          throw await this.asError(res, "payment required but no PAYMENT-REQUIRED challenge");
-        }
-        // Prepay hard-402 fallback: pay a TOP-OFF (>=$1) instead of the op price.
-        // Claim the single-flight now if we didn't already (cold start: no
-        // template -> no proactive claim). Over the session cap -> pay-per-op.
-        if (!claimedTopoff) claimedTopoff = this.tryClaimTopoffOnFault();
-        const topoffHere = claimedTopoff && this.topoffFitsSessionCap();
-        const usd = topoffHere
-          ? this.prepay!.topoff
-          : challengePriceUsd(challenge, undefined, this.network);
-        if (!topoffHere) {
-          this.assertOpPriceCeiling(usd);
-          this.assertSpend(usd);
-        }
-        // Pin the EIP-3009 nonce to the op's stable key so a transient retry reuses
-        // the authorization and the server dedupes (read idempotency record / the
-        // already-settled recovery). Re-send the identical signed header on retry.
-        const paymentSignature = await buildPaymentHeader(this.requireSigner(), challenge, {
-          amountAtomic: topoffHere ? this.topoffAtomic : undefined,
-          expectedNetwork: this.network,
-          nonce: nonceFromIdempotencyKey(idempotencyKey),
-        });
-        res = await this.fetchWithRetry(url, () => ({
-          method: "GET",
-          headers: { ...idemHeaders, "PAYMENT-SIGNATURE": paymentSignature },
-        }));
-        this.trackBalance(res);
-        // Same settlement gate as the proactive path (L3): count a TOP-OFF only when it
-        // settled (non-empty PAYMENT-RESPONSE txHash); under concurrent prepay the paid
-        // retry can be served from newly-minted credits (txHash "") having settled nothing.
-        // The op-price branch (!topoffHere) stays on res.ok — it is the real op cost.
-        if (res.ok && (!topoffHere || this.settledTxHash(res))) this.recordSpend(usd);
-      }
-
-      if (res.status === 404) {
-        return { value: null };
-      }
-      if (!res.ok) {
-        throw await this.asError(res, "get failed");
-      }
-
-      const data = (await res.json()) as { value: string; usage?: UsageBlock };
-      const decryptedText = await this.decryptValue(data.value, key);
-      return { value: JSON.parse(decryptedText) as T, usage: data.usage };
+        path,
+        url,
+        idempotencyKey,
+        creditCostUsd: ACCOUNT_READ_USD,
+        label: "get failed",
+        buildRequest: (headers) => ({ method: "GET", headers }),
+        parseSuccess: async (res) => parseBody(await res.text()),
+        parseInline: async (inlineRes) => parseBody(inlineRes.body),
+        notFound: () => ({ value: null }),
+      });
     } finally {
-      if (claimedTopoff) this.topoffInFlight = false;
+      if (flight.claimed) this.topoffInFlight = false;
     }
   }
 
