@@ -64,16 +64,22 @@ export { AgentKVError, SpendCapError } from "./types";
 // is kept in sync by the routing tests in `test/paths.test.ts`.
 const V1 = "/v1";
 
-// Fixed EIP-191 message signed to derive the AES key material in sign-to-derive mode.
-// SECURITY NOTE: this is a bare, PUBLIC, unbound personal_sign string — a signature over it
-// IS the complete key material (value + key-name + blind-index MAC) for this wallet's data.
-// It is intentionally fixed for cross-session key stability, but that means one phished
-// signature (a dapp/relayer getting the user to sign this innocuous-looking text) can decrypt
-// all of the wallet's AgentKV data. Callers who cannot treat a message signature as
-// secret-grade should construct with an explicit `encryptionKey` instead of sign-to-derive.
-// (A future v2 scheme may bind the endpoint host into EIP-712 typed data; changing the
-// message would re-key existing data, so it must ship behind a dual-read migration.)
-const ENC_DERIVATION_MESSAGE = "agentkv-encryption-key-v1";
+// EIP-712 typed data signed to derive the AES key material in sign-to-derive mode. Unlike a
+// bare personal_sign string (which ANY dapp/relayer can get a user to sign, then reproduce to
+// recover the key), this is DOMAIN-SCOPED: wallets render the "AgentKV Encryption" domain, so
+// a generic-text phishing prompt cannot elicit the same signature. The signature IS the
+// complete key material (value + key-name + blind-index MAC), so callers who can't treat it as
+// secret-grade should construct with an explicit `encryptionKey` instead. The domain omits
+// chainId on purpose so the key is stable across networks; changing any field below re-keys all
+// sign-to-derive data.
+const ENC_DERIVATION_DOMAIN = { name: "AgentKV Encryption", version: "1" } as const;
+const ENC_DERIVATION_TYPES = {
+  Derive: [
+    { name: "purpose", type: "string" },
+    { name: "version", type: "string" },
+  ],
+} as const;
+const ENC_DERIVATION_MESSAGE = { purpose: "encryption-key", version: "v1" } as const;
 
 // Credit costs in USD for the spend-cap gate in account-key (bearer) mode.
 // In account mode a set/get debits PREPAID CREDITS server-side (READ_COST=3,
@@ -337,17 +343,21 @@ export class AgentKV {
               0,
             );
           }
-          const sig = await this.signer.signMessage({ message: ENC_DERIVATION_MESSAGE });
+          const sig = await this.signer.signTypedData({
+            domain: ENC_DERIVATION_DOMAIN,
+            types: ENC_DERIVATION_TYPES,
+            primaryType: "Derive",
+            message: ENC_DERIVATION_MESSAGE,
+          });
           const sigBytes = hexToBytes(sig);
-          // Hash the signature's raw bytes as the HKDF ikm. Require the STANDARD 65-byte
-          // EIP-191 ECDSA serialization: a signer that returns a 64-byte EIP-2098 compact
-          // form or an ERC-1271/6492 smart-account wrapper blob would derive a DIFFERENT
-          // key for the same wallet and silently lose access to prior data. Reject those
-          // clearly (they must construct with an explicit encryptionKey). NB: we do NOT
-          // normalize the v byte — that would re-key existing deterministic-signer users.
+          // Hash the signature's raw bytes as the HKDF ikm. Require the STANDARD 65-byte ECDSA
+          // serialization: a signer that returns a 64-byte EIP-2098 compact form or an
+          // ERC-1271/6492 smart-account wrapper blob would derive a DIFFERENT key for the same
+          // wallet and silently lose access to prior data. Reject those clearly (they must
+          // construct with an explicit encryptionKey). NB: we do NOT normalize the v byte.
           if (sigBytes.length !== 65) {
             throw new AgentKVError(
-              `sign-to-derive expected a 65-byte EIP-191 signature but got ${sigBytes.length} bytes; ` +
+              `sign-to-derive expected a 65-byte EIP-712 signature but got ${sigBytes.length} bytes; ` +
                 "this signer's format is unstable for key derivation — construct with an explicit encryptionKey",
               "invalid_config",
               0,
@@ -359,7 +369,7 @@ export class AgentKV {
         this._km = km;
         return km;
       })().catch((err) => {
-        // Do NOT cache a rejected derivation: a transient signMessage failure (dismissed
+        // Do NOT cache a rejected derivation: a transient signTypedData failure (dismissed
         // wallet prompt, MPC/RPC hiccup) must not permanently brick every future op on this
         // instance. Clear the memo so the next call retries the derivation from scratch.
         this._kmPromise = undefined;

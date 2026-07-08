@@ -60,9 +60,9 @@ describe("key-derivation golden vectors (data-durability contract)", () => {
     mac: "0x16b5166eacb2e9ea1fee40cc7ff2d504c42c7263570ce4e5bb3507e5beef01af",
   };
   const SIGNER_MODE = {
-    value: "0x2a5d836ac01396079aef267faf225f605b1c3497cb83f519013597fc95ab8e6c",
-    keyName: "0xaa9d8feabfd743db31c87d43d1166f0c5d017639c08d772f5326d36c42a4e42a",
-    mac: "0x314943ba7e56bd241f6bd090fb1896c1be902e1e26f3e25dde5034ef3163a31e",
+    value: "0x8f1ba23b8ffe2ceed2837c7fc541a509a509004206c5095b9f848ae9f3d62d0b",
+    keyName: "0x44951547e2ddfa770cdbb88e0841d01cdcfc6faabbfa32f91bdc28c050adc209",
+    mac: "0xe7985ee40a9dfe93361fd8a89c041f9b7c41accfd900546bd4eb3ac0ce1df4ad",
   };
   const hex = (b: Uint8Array) => `0x${Buffer.from(b).toString("hex")}`;
 
@@ -90,15 +90,24 @@ describe("key-derivation golden vectors (data-durability contract)", () => {
 });
 
 describe("sign-to-derive: failure + format handling", () => {
-  it("does NOT cache a rejected derivation — a transient signMessage failure is retryable", async () => {
+  it("does NOT cache a rejected derivation — a transient signTypedData failure is retryable", async () => {
     let calls = 0;
-    const goodSig = await privateKeyToAccount(PK).signMessage({
-      message: "agentkv-encryption-key-v1",
+    const account = privateKeyToAccount(PK);
+    const goodSig = await account.signTypedData({
+      domain: { name: "AgentKV Encryption", version: "1" },
+      types: {
+        Derive: [
+          { name: "purpose", type: "string" },
+          { name: "version", type: "string" },
+        ],
+      },
+      primaryType: "Derive",
+      message: { purpose: "encryption-key", version: "v1" },
     });
     const flakySigner = {
-      address: privateKeyToAccount(PK).address,
-      signTypedData: privateKeyToAccount(PK).signTypedData,
-      signMessage: async () => {
+      address: account.address,
+      signMessage: account.signMessage,
+      signTypedData: async () => {
         calls++;
         if (calls === 1) throw new Error("user dismissed the wallet prompt");
         return goodSig;
@@ -111,15 +120,15 @@ describe("sign-to-derive: failure + format handling", () => {
     expect(calls).toBe(2);
   });
 
-  it("rejects a signer whose signMessage returns a non-65-byte signature (unstable for derivation)", async () => {
+  it("rejects a signer whose derivation signature is not 65 bytes (unstable for derivation)", async () => {
     const shortSigner = {
       address: privateKeyToAccount(PK).address,
-      signTypedData: privateKeyToAccount(PK).signTypedData,
+      signMessage: privateKeyToAccount(PK).signMessage,
       // 64-byte EIP-2098 compact-ish blob (no v byte) — a different serialization would
       // silently rotate the key, so it must be rejected, not accepted.
-      signMessage: async () => `0x${"11".repeat(64)}` as `0x${string}`,
+      signTypedData: async () => `0x${"11".repeat(64)}` as `0x${string}`,
     };
     const kv = new AgentKV({ signer: shortSigner as any, endpoint: ENDPOINT });
-    await expect((kv as any).getKeyMaterial()).rejects.toThrow(/65-byte EIP-191/);
+    await expect((kv as any).getKeyMaterial()).rejects.toThrow(/65-byte EIP-712/);
   });
 });

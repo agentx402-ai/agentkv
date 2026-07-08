@@ -18,7 +18,6 @@ export interface Signer {
   address: `0x${string}`;
   // viem's signTypedData is generic; accept it structurally.
   signTypedData(args: any): Promise<`0x${string}`>;
-  signMessage(args: { message: string }): Promise<`0x${string}`>;
 }
 
 /** EIP-712 domain name shared with the server's EIP-712 verifier. */

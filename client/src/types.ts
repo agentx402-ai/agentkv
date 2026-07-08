@@ -137,8 +137,8 @@ interface AgentKVCommon {
  *    data becomes unreadable AND unlisted (its lookup digests no longer match) with no error
  *    — reads simply return null. To move between them, or to use a KMS/hardware/MPC signer,
  *    pin an explicit `encryptionKey` so the AES key never depends on the signer shape.
- *  - Sign-to-derive requires a DETERMINISTIC signer whose signMessage returns the standard
- *    65-byte EIP-191 ECDSA form. Non-deterministic (some MPC/threshold) or alternate-encoding
+ *  - Sign-to-derive requires a DETERMINISTIC signer whose signTypedData returns the standard
+ *    65-byte ECDSA form. Non-deterministic (some MPC/threshold) or alternate-encoding
  *    signers (EIP-2098 compact, ERC-1271/6492 smart accounts) either rotate the key per call
  *    or are rejected — those MUST pass an explicit `encryptionKey`.
  *  - The sign-to-derive signature IS secret-grade material: whoever obtains it can derive all
