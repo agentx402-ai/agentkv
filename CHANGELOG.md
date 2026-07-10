@@ -31,6 +31,10 @@ All notable changes to AgentKV are documented here. The format follows
   discover and fund a fresh namespace from the same challenge that gates the operation.
   Free routes (`getBalance`, `listKeys`, `del`) on an unprovisioned account are unchanged —
   still `401 account_not_found`.
+- Hook-less account-key clients (no `topoffPayer`/`opInlinePayer`) hitting
+  `account_not_provisioned` now get the actionable bootstrap error message (deposit, or opt in
+  via `bootstrap`/`AGENTKV_BOOTSTRAP`) instead of the raw server error — same code and status,
+  friendlier text.
 
 [0.2.0]: https://github.com/agentx402-ai/agentkv/releases/tag/v0.2.0
 
