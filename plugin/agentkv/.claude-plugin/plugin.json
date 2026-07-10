@@ -1,6 +1,6 @@
 {
   "name": "agentkv",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "AgentKV: encrypted, x402-paid persistent memory for agents. Stores values client-side encrypted (AES-256-GCM) so the server is zero-knowledge. Wallet address is the namespace — no accounts or API keys needed.",
   "license": "MIT",
   "author": {

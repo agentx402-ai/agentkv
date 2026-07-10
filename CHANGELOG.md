@@ -4,7 +4,25 @@ All notable changes to AgentKV are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [0.2.0]
+## [0.2.1] — 2026-07-10
+
+### Changed
+
+- **`@agentkv/client`**: `bootstrap` is now rejected (`invalid_config`) in wallet mode
+  instead of being silently ignored — parity with `topoffPayer`/`opInlinePayer` and the
+  CLI's `AGENTKV_BOOTSTRAP` guard. Wallet mode signs its own x402 challenges; there is
+  no unprovisioned-account bootstrap to authorize, so a misplaced option now fails loudly.
+- **`@agentkv/cli`**: `AGENTKV_BOOTSTRAP` now accepts only `1`/`true`/`0`/`false`
+  (case-insensitive) and throws `invalid_config` on anything else — a typo (`yes`,
+  `ture`) previously coerced silently to `false`, leaving users who believed they had
+  opted in with an unexplained bootstrap denial later.
+- CI now cross-checks all five version sources (both `package.json`s, both `VERSION`
+  constants, `plugin.json`) plus the cli→client dependency range, matching what
+  `RELEASING.md` and the `version.ts` comment always claimed.
+
+[0.2.1]: https://github.com/agentx402-ai/agentkv/releases/tag/v0.2.1
+
+## [0.2.0] — 2026-07-10
 
 ### Added
 

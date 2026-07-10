@@ -90,13 +90,27 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
-      - name: Publishable package versions must match (coordinated release)
+      - name: All five version sources + the cli→client dep must match (RELEASING.md)
         run: |
           node -e '
             const fs = require("fs");
-            const ver = (p) => JSON.parse(fs.readFileSync(p, "utf8")).version;
-            const v = { client: ver("client/package.json"), cli: ver("cli/package.json") };
+            const read = (p) => fs.readFileSync(p, "utf8");
+            const ver = (p) => JSON.parse(read(p)).version;
+            const konst = (p) => (read(p).match(/VERSION = "([^"]+)"/) || [])[1];
+            const v = {
+              clientPkg: ver("client/package.json"),
+              cliPkg: ver("cli/package.json"),
+              clientConst: konst("client/src/index.ts"),
+              cliConst: konst("cli/src/version.ts"),
+              plugin: ver("plugin/agentkv/.claude-plugin/plugin.json"),
+            };
             const uniq = [...new Set(Object.values(v))];
-            if (uniq.length !== 1) { console.error("::error::publishable package versions diverge:", JSON.stringify(v)); process.exit(1); }
-            console.log("ok: client, cli all at " + uniq[0]);
+            if (uniq.length !== 1 || uniq[0] === undefined) {
+              console.error("::error::version sources diverge:", JSON.stringify(v)); process.exit(1);
+            }
+            const dep = JSON.parse(read("cli/package.json")).dependencies["@agentkv/client"];
+            if (dep !== "^" + v.clientPkg) {
+              console.error(`::error::cli dependency on @agentkv/client (${dep}) != ^${v.clientPkg}`); process.exit(1);
+            }
+            console.log("ok: all 5 version sources + cli->client dep at " + uniq[0]);
           '

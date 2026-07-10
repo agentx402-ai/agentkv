@@ -239,6 +239,17 @@ describe("AGENTKV_BOOTSTRAP (pay-per-call bootstrap opt-in)", () => {
     expect(resolveConfig({}, { ...accountEnv, AGENTKV_BOOTSTRAP: "0" }).bootstrap).toBe(false);
   });
 
+  it("AGENTKV_BOOTSTRAP=yes (unrecognized) throws instead of silently coercing — parity with AGENTKV_TOPOFF/AGENTKV_INLINE", () => {
+    // A typo ("ture", "yes") must not silently become false: fail-safe today, but
+    // the user believes they opted in and gets an unexplained bootstrap denial later.
+    expect(() => resolveConfig({}, { ...accountEnv, AGENTKV_BOOTSTRAP: "yes" })).toThrow(
+      /AGENTKV_BOOTSTRAP.*unrecognized/,
+    );
+    expect(() => resolveConfig({}, { ...accountEnv, AGENTKV_BOOTSTRAP: "ture" })).toThrow(
+      /1\/true\/0\/false/,
+    );
+  });
+
   it("rejects AGENTKV_BOOTSTRAP in wallet mode (account-key only), like AGENTKV_TOPOFF/AGENTKV_INLINE", () => {
     const walletEnv = {
       AGENTKV_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
