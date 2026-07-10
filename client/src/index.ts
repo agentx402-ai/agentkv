@@ -158,6 +158,11 @@ export class AgentKV {
    * set()/get(), which gate on `!this.topoffPayer`).
    */
   private readonly opInlinePayer?: (req: OpInlineRequest) => Promise<OpInlineResponse>;
+  /**
+   * Opt-in gate (default false) letting a payer hook fire on an
+   * `account_not_provisioned` 402 — see `AgentKVOptions.bootstrap`.
+   */
+  private readonly bootstrap: boolean = false;
   /** Last-known credit balance as an EXACT integer credit count (never USD floats). */
   private knownCredits?: number;
   /** Synchronous single-flight guard: at most one in-flight top-off at a time. */
@@ -221,6 +226,12 @@ export class AgentKV {
       // Unlike topoffPayer, opInlinePayer needs no `prepay`: it is pay-per-op,
       // fired directly off a hard 402 with no watermark/top-off machinery.
       this.opInlinePayer = opts.opInlinePayer;
+    }
+    if (opts.bootstrap !== undefined) {
+      if (typeof opts.bootstrap !== "boolean") {
+        throw new AgentKVError("bootstrap must be a boolean", "invalid_config", 0);
+      }
+      this.bootstrap = opts.bootstrap;
     }
     if (opts.prepay) {
       if (isAccountMode && !opts.topoffPayer) {
@@ -782,6 +793,24 @@ export class AgentKV {
       // Inline opt-in: route the WHOLE op through an external x402 transport (e.g. awal)
       // instead of a credit top-off. Mutually exclusive with topoffPayer PER OP.
       if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
+        // Bootstrap gating (spec 2026-07-10): an account_not_provisioned 402 is
+        // payable, but auto-funding it can silently fund a TYPO'D key — require
+        // the explicit opt-in. insufficient_credits (provisioned account) keeps
+        // firing unconditionally, as before. Clone before reading: `res` may
+        // still need to be read by asError()/errorFromBody() below on other
+        // branches, and a Response body can only be consumed once.
+        const errBody = (await res
+          .clone()
+          .json()
+          .catch(() => undefined)) as { code?: string } | undefined;
+        if (errBody?.code === "account_not_provisioned" && !this.bootstrap) {
+          throw new AgentKVError(
+            "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
+              "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)",
+            "account_not_provisioned",
+            402,
+          );
+        }
         // Bound by the caller's per-op cap and pre-reserve against the session cap BEFORE
         // paying — the credit-cost pre-flight only checked the credit price, not real USDC.
         const inlineCeilingUsd = this.inlineOpCeilingUsd();
