@@ -203,3 +203,51 @@ describe("AGENTKV_INLINE (account-key inline pay-per-op)", () => {
     expect(typeof internals.opInlinePayer).toBe("function");
   });
 });
+
+describe("AGENTKV_BOOTSTRAP (pay-per-call bootstrap opt-in)", () => {
+  const AK = `ak_${"a".repeat(64)}`;
+  const ENC = `0x${"11".repeat(32)}`;
+  const accountEnv = {
+    AGENTKV_ACCOUNT_KEY: AK,
+    AGENTKV_ENCRYPTION_KEY: ENC,
+    AGENTKV_ENDPOINT: "https://api.agentx402.ai",
+  };
+
+  it("unset by default", () => {
+    expect(resolveConfig({}, accountEnv).bootstrap).toBeUndefined();
+  });
+
+  it("env account key + no AGENTKV_BOOTSTRAP -> bootstrap:false on the constructed client (opt-in stays opt-in)", () => {
+    const cfg = resolveConfig({}, accountEnv);
+    const kv = clientFromConfig(cfg, { env: accountEnv as NodeJS.ProcessEnv });
+    expect((kv as unknown as { bootstrap: boolean }).bootstrap).toBe(false);
+  });
+
+  it("env account key + AGENTKV_BOOTSTRAP=1 -> bootstrap:true on the constructed client", () => {
+    const env = { ...accountEnv, AGENTKV_BOOTSTRAP: "1" };
+    const cfg = resolveConfig({}, env);
+    expect(cfg.bootstrap).toBe(true);
+    const kv = clientFromConfig(cfg, { env: env as NodeJS.ProcessEnv });
+    expect((kv as unknown as { bootstrap: boolean }).bootstrap).toBe(true);
+  });
+
+  it("AGENTKV_BOOTSTRAP=true (word form, case-insensitive) -> true", () => {
+    expect(resolveConfig({}, { ...accountEnv, AGENTKV_BOOTSTRAP: "TRUE" }).bootstrap).toBe(true);
+  });
+
+  it("AGENTKV_BOOTSTRAP=0 -> false (explicitly set, not just unset)", () => {
+    expect(resolveConfig({}, { ...accountEnv, AGENTKV_BOOTSTRAP: "0" }).bootstrap).toBe(false);
+  });
+
+  it("rejects AGENTKV_BOOTSTRAP in wallet mode (account-key only), like AGENTKV_TOPOFF/AGENTKV_INLINE", () => {
+    const walletEnv = {
+      AGENTKV_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      AGENTKV_ENDPOINT: "https://api.agentx402.ai",
+      AGENTKV_BOOTSTRAP: "1",
+    };
+    const cfg = resolveConfig({}, walletEnv);
+    expect(() => clientFromConfig(cfg, { env: walletEnv as NodeJS.ProcessEnv })).toThrow(
+      /account-key/,
+    );
+  });
+});

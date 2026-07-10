@@ -99,17 +99,44 @@ Pick one strategy per client instance: `topoffPayer` if you want a standing
 credit balance (cheaper per-op, but requires prepay bootstrapping), or
 `opInlinePayer` if you want strict pay-per-op with no balance to manage.
 
-**The account must already exist.** Auto top-off maintains a funded account; it does not
-create one. A brand-new `ak_…` has no server-side account until its first deposit, so the
-first op returns `account_not_found` (401) rather than a credits 402 — the hook does not fire
-on a 401 (that error is indistinguishable from a typo'd or rotated key, so auto-depositing on
-it could fund the wrong namespace). Bootstrap the account with one explicit deposit first
-(e.g. `fundAccount(payer, 1)` or an out-of-band `awal x402 pay …/account/deposit`); after it
-exists, `topoffPayer` keeps it funded.
+### Bootstrapping a brand-new account — `bootstrap`
 
-The same applies to `opInlinePayer`: it also only fires on a `402`, and a brand-new account
-401s before it ever sees one, so it cannot bootstrap a fresh account either — deposit once
-first, same as above.
+A paid op (`set`/`get`) against a brand-new, never-funded `ak_…` returns a `402` whose body
+`code` is `account_not_provisioned` — distinct from the ordinary `insufficient_credits` `402`
+an already-funded account gets when it merely runs dry. `insufficient_credits` always fires
+`topoffPayer` / `opInlinePayer` unconditionally, as above. `account_not_provisioned` does
+**not** — by default it throws instead of paying, because auto-funding it is indistinguishable
+from silently funding a typo'd or rotated account key:
+
+```
+AgentKVError: account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to
+pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)
+```
+
+Two ways to get past it:
+
+1. **Deposit first, then use `topoffPayer` / `opInlinePayer` as normal** — one explicit deposit
+   (e.g. `fundAccount(payer, 1)` or an out-of-band `awal x402 pay …/account/deposit`)
+   provisions the account; every op after that is `insufficient_credits`, which the hooks
+   already handle.
+2. **Opt in to pay-per-call bootstrap** — pass `bootstrap: true` and the very first `402` (even
+   `account_not_provisioned`) routes through `topoffPayer` / `opInlinePayer` like any other,
+   funding and using the account in one call:
+
+   ```ts
+   const kv = new AgentKV({ accountKey, encryptionKey, endpoint, opInlinePayer, bootstrap: true });
+   ```
+
+   `bootstrap` gates only the *first-ever* payment on a key — it has no effect once the account
+   is provisioned, and no effect in wallet mode (a signing wallet always pays its own x402
+   challenges directly, so there is nothing to gate). Default `false`.
+
+The CLI mirrors this with `AGENTKV_BOOTSTRAP=1`/`true`, and additionally auto-enables
+`bootstrap` when the account key came from `agentkv account new`'s own minted
+`~/.agentkv/account.json` — a file the CLI wrote itself can't be a typo, so there's nothing to
+guard against. An `AGENTKV_ACCOUNT_KEY` supplied via the environment stays opt-in and requires
+the explicit flag. See the [CLI README](https://github.com/agentx402-ai/agentkv/tree/main/cli#readme)
+for details.
 
 - **Usage envelope is asymmetric** — writes get it inline on `SetResult.usage`; reads need the
   separate `getWithUsage(key)` accessor (returning `{ value, usage }`), since `get()` keeps its

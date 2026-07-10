@@ -312,4 +312,30 @@ describe("clientFromConfig — account-mode auto-detect", () => {
       clean(env);
     }
   });
+
+  // A minted account.json is this CLI's own file — it can't be a typo — so it auto-authorizes
+  // pay-per-call bootstrap even with no AGENTKV_BOOTSTRAP env set.
+  it("stored-file account key (no AGENTKV_ACCOUNT_KEY env) auto-authorizes bootstrap", () => {
+    const env = tmpEnv();
+    try {
+      createStoredAccount(env);
+      const client = clientFromConfig({ ...cfgBase }, { env });
+      expect((client as any).bootstrap).toBe(true);
+    } finally {
+      clean(env);
+    }
+  });
+
+  // An env-supplied AGENTKV_ACCOUNT_KEY stays opt-in for bootstrap, even if a minted
+  // account.json also happens to be present — env/config is where typos live.
+  it("env AGENTKV_ACCOUNT_KEY does NOT auto-authorize bootstrap, even with an account.json present", () => {
+    const env = tmpEnv();
+    try {
+      createStoredAccount(env);
+      const client = clientFromConfig({ ...cfgBase, accountKey: AK, encryptionKey: ENC }, { env });
+      expect((client as any).bootstrap).toBe(false);
+    } finally {
+      clean(env);
+    }
+  });
 });

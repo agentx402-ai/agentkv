@@ -288,6 +288,25 @@ describe("bootstrap gating on account_not_provisioned", () => {
     expect(inline).toHaveBeenCalledTimes(1);
   });
 
+  it("bootstrap: false (explicit) + insufficient_credits 402 → still pays via the hook (gating is scoped to account_not_provisioned only)", async () => {
+    const inline = vi.fn(async () => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, expires_at: "x" }),
+      headers: {},
+    }));
+    vi.stubGlobal("fetch", async () => json(402, INSUFFICIENT));
+    const kv = new AgentKV({
+      accountKey: AK,
+      encryptionKey: ENC,
+      endpoint,
+      opInlinePayer: inline,
+      bootstrap: false,
+    });
+    const r = await kv.set("k", { v: 1 });
+    expect(r).toMatchObject({ ok: true });
+    expect(inline).toHaveBeenCalledTimes(1);
+  });
+
   it("bootstrap: true + account_not_provisioned 402 → routes through the hook (opt-in)", async () => {
     const inline = vi.fn(async () => ({
       status: 200,

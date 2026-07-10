@@ -1,5 +1,5 @@
 // client/src/index.ts
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 import { fetchWithRetry } from "@agentx402-ai/core";
 import { hexToBytes } from "viem";

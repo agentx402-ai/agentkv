@@ -4,4 +4,4 @@
  * and the MCP server handshake. Keep in sync with cli/package.json on release
  * (see RELEASING.md); the version-sync check in CI guards against drift.
  */
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
