@@ -1,6 +1,6 @@
 {
   "name": "@agentkv/client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "AgentKV client SDK: zero-knowledge encryption + x402/EIP-712 signing for the agent-native, pay-per-request KV store",
   "license": "MIT",
   "author": "The AgentKV Authors <contact@agentx402.ai>",

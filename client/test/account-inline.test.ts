@@ -345,40 +345,15 @@ describe("bootstrap gating on account_not_provisioned", () => {
     expect(inline).toHaveBeenCalledTimes(1);
   });
 
-  it("wallet mode: bootstrap: true has no effect — a 402 pay-and-retry proceeds unchanged, even for account_not_provisioned", async () => {
-    const challenge = btoa(
-      JSON.stringify({
-        x402Version: 2,
-        accepts: [
-          {
-            scheme: "exact",
-            network: "eip155:8453",
-            amount: "5000",
-            asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            payTo: "0x0000000000000000000000000000000000000001",
-            resource: "/kv/session",
-            description: "write",
-            mimeType: "application/json",
-            maxTimeoutSeconds: 300,
-          },
-        ],
-      }),
+  it("wallet mode: bootstrap is rejected at construction (invalid_config) — parity with the payer hooks and the CLI's AGENTKV_BOOTSTRAP guard", () => {
+    // Was: silently inert (a 0.2.0 test pinned that). Wallet mode signs its own
+    // x402 challenges, so there is no unprovisioned-account bootstrap to
+    // authorize — a misplaced option now fails loudly instead of doing nothing.
+    expect(() => new AgentKV({ privateKey: PK, endpoint, bootstrap: true })).toThrow(
+      expect.objectContaining({ code: "invalid_config" }),
     );
-    let attempt = 0;
-    const fetchMock = vi.fn(async () => {
-      attempt++;
-      if (attempt === 1) {
-        return new Response(JSON.stringify(NOT_PROVISIONED), {
-          status: 402,
-          headers: { "PAYMENT-REQUIRED": challenge },
-        });
-      }
-      return new Response(JSON.stringify({ ok: true, expires_at: "x" }), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const kv = new AgentKV({ privateKey: PK, endpoint, bootstrap: true });
-    const res = await kv.set("session", "v");
-    expect(res.ok).toBe(true);
-    expect(attempt).toBe(2);
+    expect(() => new AgentKV({ privateKey: PK, endpoint, bootstrap: false })).toThrow(
+      /account-key-mode only/,
+    );
   });
 });

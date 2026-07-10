@@ -144,7 +144,7 @@ export function resolveConfig(
     // Bootstrap opt-in: env-only, account-key mode only (validated at client construction).
     // Undefined (not just false) when unset, so clientFromConfig can distinguish "not
     // requested" from "explicitly false" and the wallet-mode guard can detect presence.
-    bootstrap: envBool(env.AGENTKV_BOOTSTRAP),
+    bootstrap: envBool(env.AGENTKV_BOOTSTRAP, "AGENTKV_BOOTSTRAP"),
   };
 }
 
@@ -156,13 +156,23 @@ function envStr(s?: string): string | undefined {
 }
 
 /**
- * Parse a boolean-ish env var: "1" or "true" (case-insensitive) -> true; any other
- * non-empty value -> false; unset/empty/whitespace-only -> undefined (not provided).
+ * Parse a boolean env var STRICTLY: "1"/"true" -> true, "0"/"false" -> false
+ * (case-insensitive); unset/empty/whitespace-only -> undefined (not provided).
+ * Any other value THROWS — parity with AGENTKV_TOPOFF/AGENTKV_INLINE, which
+ * reject unrecognized values rather than silently coercing a typo ("ture",
+ * "yes") into a behavior the user didn't choose.
  */
-function envBool(s: string | undefined): boolean | undefined {
+function envBool(s: string | undefined, name: string): boolean | undefined {
   const v = envStr(s);
   if (v === undefined) return undefined;
-  return v === "1" || v.toLowerCase() === "true";
+  const t = v.toLowerCase();
+  if (t === "1" || t === "true") return true;
+  if (t === "0" || t === "false") return false;
+  throw new AgentKVError(
+    `${name}: unrecognized value ${JSON.stringify(v)} (use 1/true/0/false)`,
+    "invalid_config",
+    0,
+  );
 }
 
 /**

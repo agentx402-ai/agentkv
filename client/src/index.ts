@@ -1,5 +1,5 @@
 // client/src/index.ts
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 
 import { fetchWithRetry } from "@agentx402-ai/core";
 import { hexToBytes } from "viem";
@@ -230,6 +230,16 @@ export class AgentKV {
     if (opts.bootstrap !== undefined) {
       if (typeof opts.bootstrap !== "boolean") {
         throw new AgentKVError("bootstrap must be a boolean", "invalid_config", 0);
+      }
+      if (!isAccountMode) {
+        // Wallet mode signs its own x402 challenges — there is no unprovisioned-
+        // account bootstrap to authorize, so the option would be silently inert.
+        // Reject like the payer hooks above and the CLI's AGENTKV_BOOTSTRAP guard.
+        throw new AgentKVError(
+          "bootstrap is account-key-mode only; wallet mode pays its own x402 challenges",
+          "invalid_config",
+          0,
+        );
       }
       this.bootstrap = opts.bootstrap;
     }
