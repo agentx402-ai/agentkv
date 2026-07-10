@@ -363,6 +363,59 @@ describe("account-key topoffPayer: bootstrap gating on account_not_provisioned",
       expect(calls).toHaveLength(2); // one request per op — no extra proactive-topoff retry
     },
   );
+
+  it(
+    "WINDOW regression: a concurrent op scheduled inside the seed→reset window must never " +
+      "observe knownCredits=0 or claim the proactive top-off (deterministic via a knownCredits " +
+      "setter trap that launches op2 one microtask after any seed — no timing flakiness). " +
+      "Without the fix, trackBalance() seeds knownCredits=0 SYNCHRONOUSLY from the 402's " +
+      "X-AgentKV-Credits-Remaining header before assertBootstrapAllowed()'s reset runs (that " +
+      "reset sits behind an `await res.clone().json()` yield point) — a window in which a " +
+      "concurrently scheduled op's synchronous tryClaimTopoff() can win the single-flight and " +
+      "fire the ungated proactive topoffPayer. With the fix, the gate runs BEFORE trackBalance " +
+      "ingests the header, so a denial throws before any seed happens and the window can't open.",
+    async () => {
+      let payerCalls = 0;
+      const kv = accountClient(async () => {
+        payerCalls++;
+      });
+      stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
+
+      // Trap writes to knownCredits (a plain runtime property despite the TS `private`
+      // annotation). If the old code path ever seeds it to 0, schedule a second op ONE
+      // MICROTASK later — a fair stand-in for any independently scheduled caller task
+      // (parallel tool calls, unawaited sets, retry loops) landing inside the window.
+      let real: number | undefined;
+      let launchedInWindow = false;
+      let valueAtLaunch: number | undefined;
+      let p2: Promise<unknown> | undefined;
+      Object.defineProperty(kv, "knownCredits", {
+        configurable: true,
+        get() {
+          return real;
+        },
+        set(v: number | undefined) {
+          real = v;
+          if (v === 0 && !launchedInWindow) {
+            launchedInWindow = true;
+            queueMicrotask(() => {
+              valueAtLaunch = real; // what a caller's synchronous tryClaimTopoff() would see
+              p2 = kv.set("k2", { v: 2 }).catch(() => {});
+            });
+          }
+        },
+      });
+
+      await kv.set("k", { v: 1 }).catch(() => {});
+      if (p2) await p2;
+      await new Promise((r) => setTimeout(r, 10));
+
+      // The seed must never happen at all for a denied 402 — the gate throws first.
+      expect(launchedInWindow).toBe(false);
+      expect(valueAtLaunch).toBeUndefined();
+      expect(payerCalls).toBe(0);
+    },
+  );
 });
 
 describe("account-key topoffPayer: proactive watermark", () => {
@@ -491,6 +544,54 @@ describe("account-key topoffPayer: prepay.async", () => {
     await new Promise((r) => setTimeout(r, 0)); // let the detached hook settle
     expect(payerCalls).toBe(1);
   });
+
+  it(
+    "WINDOW regression (async mode): a concurrent op scheduled inside the seed→reset window " +
+      "must never observe knownCredits=0 or trigger maybeAsyncTopoff's DETACHED deposit — this " +
+      "path has NO bootstrap gate of its own; its only defense is `knownCredits === undefined`, " +
+      "so a stale 0 seed slips straight through to a real, ungated top-off",
+    async () => {
+      let payerCalls = 0;
+      const kv = accountClient(
+        async () => {
+          payerCalls++;
+        },
+        { prepay: { watermark: 0.5, topoff: 1, async: true }, bootstrap: false },
+      );
+      stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
+
+      let real: number | undefined;
+      let launchedInWindow = false;
+      let valueAtLaunch: number | undefined;
+      let p2: Promise<unknown> | undefined;
+      Object.defineProperty(kv, "knownCredits", {
+        configurable: true,
+        get() {
+          return real;
+        },
+        set(v: number | undefined) {
+          real = v;
+          if (v === 0 && !launchedInWindow) {
+            launchedInWindow = true;
+            queueMicrotask(() => {
+              valueAtLaunch = real;
+              p2 = kv.set("k2", { v: 2 }).catch(() => {});
+            });
+          }
+        },
+      });
+
+      await kv.set("k1", { v: 1 }).catch(() => {});
+      if (p2) await p2;
+      await new Promise((r) => setTimeout(r, 10));
+
+      // The seed must never happen at all for a denied 402 — the gate throws first, so the
+      // setter's `v === 0` trap never fires and maybeAsyncTopoff() never sees a stale 0.
+      expect(launchedInWindow).toBe(false);
+      expect(valueAtLaunch).toBeUndefined();
+      expect(payerCalls).toBe(0);
+    },
+  );
 });
 
 // ---- deposit() aliases the configured payer in account-key mode ----

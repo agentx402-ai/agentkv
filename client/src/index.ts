@@ -772,6 +772,23 @@ export class AgentKV {
           }),
         );
       let res = await sendBearer();
+      // Gate BEFORE ingesting the balance: trackBalance() reads
+      // `X-AgentKV-Credits-Remaining: 0` off an unprovisioned account's 402 and would
+      // otherwise seed `knownCredits = 0` synchronously, right here, before
+      // assertBootstrapAllowed() gets a chance to reset it (that reset sits behind the
+      // `await res.clone().json()` yield point inside the gate). In that window a
+      // concurrently scheduled op (parallel tool calls, unawaited sets, retry loops) can
+      // observe `knownCredits === 0`, synchronously win `tryClaimTopoff()`, and fire the
+      // ungated proactive `topoffPayer` — auto-funding an unprovisioned key with bootstrap
+      // off. Checking the gate first means a denial throws before any seed happens, so the
+      // window never opens. Shared choke point for BOTH the topoffPayer hard-402 branch and
+      // the opInlinePayer branch below — they both react to this same response. The calls to
+      // `assertBootstrapAllowed()` further down are kept as belt-and-braces (harmless no-ops
+      // once this one has already gated) and its internal `knownCredits = undefined` reset
+      // stays in place as a second line of defense.
+      if (res.status === 402) {
+        await this.assertBootstrapAllowed(res);
+      }
       this.trackBalance(res);
       // Hard 402: with a payer hook, buy a top-off and retry ONCE (same key = exactly-once).
       // Skipped after a successful proactive deposit (`!toppedOff`) so at most one deposit/op.
@@ -1462,14 +1479,14 @@ export class AgentKV {
       .catch(() => undefined)) as { code?: string } | undefined;
     if (errBody?.code === "account_not_provisioned" && !this.bootstrap) {
       // An unprovisioned account has no meaningful credit balance. The worker still sends
-      // `X-AgentKV-Credits-Remaining: 0` on this 402 (WalletKV.accountNotProvisioned), and
-      // `trackBalance()` (called on every response, including this one) ingests it BEFORE
-      // this gate runs — seeding `knownCredits = 0`. Left alone, that seed would make the
-      // NEXT op's synchronous `tryClaimTopoff()` (0 < watermark) claim the proactive
-      // single-flight and fire `runSharedTopoff()` with NO bootstrap gate (the gate only
-      // guards the hard-402 branch, not the proactive one) — a real >=$1 deposit funding the
-      // unprovisioned key one op later. Reset it here so the next op re-enters this same
-      // gated hard-402 path instead of the proactive one.
+      // `X-AgentKV-Credits-Remaining: 0` on this 402 (WalletKV.accountNotProvisioned).
+      // `performOp()` now calls this gate BEFORE `trackBalance()` ingests that header, so a
+      // denial here throws before `knownCredits` is ever seeded to 0 — closing the window
+      // where a concurrent op's synchronous `tryClaimTopoff()` could observe 0 and fire the
+      // proactive `topoffPayer` ungated. The reset below is belt-and-braces for any call site
+      // that (now or in the future) reaches this gate AFTER a seed has already happened —
+      // it re-arms the NEXT op's synchronous `tryClaimTopoff()` (0 < watermark) to fall
+      // through instead of claiming the proactive single-flight ungated.
       this.knownCredits = undefined;
       throw new AgentKVError(
         "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
