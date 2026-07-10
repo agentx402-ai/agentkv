@@ -24,6 +24,10 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 }
 
 const INSUFFICIENT = { error: "insufficient credits", code: "insufficient_credits" };
+const NOT_PROVISIONED = { error: "account not provisioned", code: "account_not_provisioned" };
+const NOT_PROVISIONED_MESSAGE =
+  "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
+  "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)";
 
 describe("account-key inline branch honors spend caps", () => {
   it("hands the hook maxAmountAtomic = the configured maxSpendUsd, not the default ceiling", async () => {
@@ -97,6 +101,20 @@ describe("opInlinePayer constructor validation", () => {
           opInlinePayer: "awal",
         }),
     ).toThrowError(/opInlinePayer/);
+  });
+
+  it("rejects a non-boolean bootstrap", () => {
+    expect(
+      () =>
+        new AgentKV({
+          accountKey: AK,
+          encryptionKey: ENC,
+          endpoint,
+          opInlinePayer: noopInline as any,
+          // @ts-expect-error deliberately wrong type
+          bootstrap: "yes",
+        }),
+    ).toThrowError(/bootstrap/);
   });
 });
 
@@ -225,5 +243,142 @@ describe("backward compatibility", () => {
     vi.stubGlobal("fetch", async () => json(402, INSUFFICIENT));
     const kv = new AgentKV({ accountKey: AK, encryptionKey: ENC, endpoint });
     await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({ code: "insufficient_credits" });
+  });
+});
+
+describe("bootstrap gating on account_not_provisioned", () => {
+  it("default (bootstrap unset) + account_not_provisioned 402 → throws the distinguishing error, never calls the hook", async () => {
+    const inline = vi.fn(noopInline);
+    const fetchMock = vi.fn(async () => json(402, NOT_PROVISIONED));
+    vi.stubGlobal("fetch", fetchMock);
+    const kv = new AgentKV({ accountKey: AK, encryptionKey: ENC, endpoint, opInlinePayer: inline });
+    await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({
+      code: "account_not_provisioned",
+      status: 402,
+      message: NOT_PROVISIONED_MESSAGE,
+    });
+    expect(inline).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no retry, no inline dispatch
+  });
+
+  it("default (bootstrap: false, explicit) + account_not_provisioned 402 → same distinguishing error", async () => {
+    const inline = vi.fn(noopInline);
+    vi.stubGlobal("fetch", async () => json(402, NOT_PROVISIONED));
+    const kv = new AgentKV({
+      accountKey: AK,
+      encryptionKey: ENC,
+      endpoint,
+      opInlinePayer: inline,
+      bootstrap: false,
+    });
+    await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({ code: "account_not_provisioned" });
+    expect(inline).not.toHaveBeenCalled();
+  });
+
+  it("default (no bootstrap) + insufficient_credits 402 → still pays via the hook (unaffected)", async () => {
+    const inline = vi.fn(async () => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, expires_at: "x" }),
+      headers: {},
+    }));
+    vi.stubGlobal("fetch", async () => json(402, INSUFFICIENT));
+    const kv = new AgentKV({ accountKey: AK, encryptionKey: ENC, endpoint, opInlinePayer: inline });
+    const r = await kv.set("k", { v: 1 });
+    expect(r).toMatchObject({ ok: true });
+    expect(inline).toHaveBeenCalledTimes(1);
+  });
+
+  it("bootstrap: false (explicit) + insufficient_credits 402 → still pays via the hook (gating is scoped to account_not_provisioned only)", async () => {
+    const inline = vi.fn(async () => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, expires_at: "x" }),
+      headers: {},
+    }));
+    vi.stubGlobal("fetch", async () => json(402, INSUFFICIENT));
+    const kv = new AgentKV({
+      accountKey: AK,
+      encryptionKey: ENC,
+      endpoint,
+      opInlinePayer: inline,
+      bootstrap: false,
+    });
+    const r = await kv.set("k", { v: 1 });
+    expect(r).toMatchObject({ ok: true });
+    expect(inline).toHaveBeenCalledTimes(1);
+  });
+
+  it("bootstrap: true + account_not_provisioned 402 → routes through the hook (opt-in)", async () => {
+    const inline = vi.fn(async () => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, expires_at: "x" }),
+      headers: {},
+    }));
+    vi.stubGlobal("fetch", async () => json(402, NOT_PROVISIONED));
+    const kv = new AgentKV({
+      accountKey: AK,
+      encryptionKey: ENC,
+      endpoint,
+      opInlinePayer: inline,
+      bootstrap: true,
+    });
+    const r = await kv.set("k", { v: 1 });
+    expect(r).toMatchObject({ ok: true });
+    expect(inline).toHaveBeenCalledTimes(1);
+  });
+
+  it("bootstrap: true + insufficient_credits 402 → still routes through the hook (unaffected)", async () => {
+    const inline = vi.fn(async () => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, expires_at: "x" }),
+      headers: {},
+    }));
+    vi.stubGlobal("fetch", async () => json(402, INSUFFICIENT));
+    const kv = new AgentKV({
+      accountKey: AK,
+      encryptionKey: ENC,
+      endpoint,
+      opInlinePayer: inline,
+      bootstrap: true,
+    });
+    const r = await kv.set("k", { v: 1 });
+    expect(r).toMatchObject({ ok: true });
+    expect(inline).toHaveBeenCalledTimes(1);
+  });
+
+  it("wallet mode: bootstrap: true has no effect — a 402 pay-and-retry proceeds unchanged, even for account_not_provisioned", async () => {
+    const challenge = btoa(
+      JSON.stringify({
+        x402Version: 2,
+        accepts: [
+          {
+            scheme: "exact",
+            network: "eip155:8453",
+            amount: "5000",
+            asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            payTo: "0x0000000000000000000000000000000000000001",
+            resource: "/kv/session",
+            description: "write",
+            mimeType: "application/json",
+            maxTimeoutSeconds: 300,
+          },
+        ],
+      }),
+    );
+    let attempt = 0;
+    const fetchMock = vi.fn(async () => {
+      attempt++;
+      if (attempt === 1) {
+        return new Response(JSON.stringify(NOT_PROVISIONED), {
+          status: 402,
+          headers: { "PAYMENT-REQUIRED": challenge },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, expires_at: "x" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const kv = new AgentKV({ privateKey: PK, endpoint, bootstrap: true });
+    const res = await kv.set("session", "v");
+    expect(res.ok).toBe(true);
+    expect(attempt).toBe(2);
   });
 });

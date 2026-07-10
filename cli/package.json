@@ -1,6 +1,6 @@
 {
   "name": "@agentkv/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AgentKV CLI and MCP server: read/write encrypted, x402-paid key-value data from the terminal or any MCP client",
   "license": "MIT",
   "author": "The AgentKV Authors <contact@agentx402.ai>",
@@ -42,7 +42,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@agentkv/client": "^0.1.0",
+    "@agentkv/client": "^0.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "viem": "^2.21.0",
     "zod": "^3.25.76"

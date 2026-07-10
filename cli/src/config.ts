@@ -38,6 +38,14 @@ export interface ResolvedConfig {
   prepayTopoffUsd?: number;
   /** Inline pay-per-op payer id from AGENTKV_INLINE ("awal" is the only recognized value). */
   inline?: string;
+  /**
+   * Pay-per-call bootstrap opt-in from AGENTKV_BOOTSTRAP ("1"/"true" -> true; unset ->
+   * undefined). Account-key mode only. `clientFromConfig` ALSO auto-enables this when the
+   * resolved account key came from this CLI's own minted `~/.agentkv/account.json` rather
+   * than an env var — a file we wrote can't be a typo, whereas an env/config-supplied key
+   * stays opt-in (see clientFromConfig).
+   */
+  bootstrap?: boolean;
 }
 
 type Flags = {
@@ -133,6 +141,10 @@ export function resolveConfig(
     // Inline pay-per-op transport: env-only, account-key mode only (validated at
     // client construction, same as `topoff`, where the auth mode is known).
     inline: envStr(env.AGENTKV_INLINE),
+    // Bootstrap opt-in: env-only, account-key mode only (validated at client construction).
+    // Undefined (not just false) when unset, so clientFromConfig can distinguish "not
+    // requested" from "explicitly false" and the wallet-mode guard can detect presence.
+    bootstrap: envBool(env.AGENTKV_BOOTSTRAP),
   };
 }
 
@@ -141,6 +153,16 @@ function envStr(s?: string): string | undefined {
   if (s === undefined) return undefined;
   const t = s.trim();
   return t === "" ? undefined : t;
+}
+
+/**
+ * Parse a boolean-ish env var: "1" or "true" (case-insensitive) -> true; any other
+ * non-empty value -> false; unset/empty/whitespace-only -> undefined (not provided).
+ */
+function envBool(s: string | undefined): boolean | undefined {
+  const v = envStr(s);
+  if (v === undefined) return undefined;
+  return v === "1" || v.toLowerCase() === "true";
 }
 
 /**
@@ -256,6 +278,10 @@ export function clientFromConfig(
       );
     }
     const opInlinePayer = cfg.inline === "awal" ? awalInlinePayer() : undefined;
+    // Bootstrap authorization: explicit env opt-in, OR the key came from the
+    // account.json THIS CLI minted (a file we wrote can't be a typo). Env-supplied
+    // keys stay opt-in: env/config is where typos live.
+    const bootstrap = cfg.bootstrap === true || (cfg.accountKey === undefined && stored !== null);
     if (cfg.topoff === "awal") {
       return new AgentKV({
         ...base,
@@ -266,6 +292,7 @@ export function clientFromConfig(
           topoff: cfg.prepayTopoffUsd ?? 1,
         },
         topoffPayer: awalTopoffPayer(),
+        bootstrap,
         ...(opInlinePayer ? { opInlinePayer } : {}),
       });
     }
@@ -273,20 +300,23 @@ export function clientFromConfig(
       ...base,
       accountKey,
       encryptionKey,
+      bootstrap,
       ...(opInlinePayer ? { opInlinePayer } : {}),
     });
   }
 
-  // AGENTKV_TOPOFF / AGENTKV_INLINE are account-key-mode only: wallet mode signs its
-  // own x402 payments (challenges and top-offs alike).
+  // AGENTKV_TOPOFF / AGENTKV_INLINE / AGENTKV_BOOTSTRAP are account-key-mode only: wallet
+  // mode signs its own x402 payments (challenges and top-offs alike) and already pays
+  // through any 402 on retry, so a bootstrap opt-in has nothing to gate.
   if (
     cfg.topoff !== undefined ||
     cfg.prepayWatermarkUsd !== undefined ||
     cfg.prepayTopoffUsd !== undefined ||
-    cfg.inline !== undefined
+    cfg.inline !== undefined ||
+    cfg.bootstrap !== undefined
   ) {
     throw new AgentKVError(
-      "AGENTKV_TOPOFF / AGENTKV_PREPAY_* / AGENTKV_INLINE apply to account-key mode only (wallet mode pays its own top-offs)",
+      "AGENTKV_TOPOFF / AGENTKV_PREPAY_* / AGENTKV_INLINE / AGENTKV_BOOTSTRAP apply to account-key mode only (wallet mode pays its own top-offs)",
       "invalid_config",
       0,
     );

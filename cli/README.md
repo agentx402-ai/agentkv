@@ -48,6 +48,12 @@ off automatically instead — see `AGENTKV_TOPOFF` in Configuration below.
 Prefer to skip prepaid credits entirely? Set `AGENTKV_INLINE=awal` to pay each op inline via x402
 as it happens — see `AGENTKV_INLINE` in Configuration below.
 
+A brand-new account (`agentkv account new`, never deposited into) 402s on its first paid op
+instead of silently auto-funding — a typo'd or rotated key must not get funded by accident. A
+key minted by `account new` and read back from its own `account.json` is auto-authorized to
+bootstrap itself on that first call; an `AGENTKV_ACCOUNT_KEY` from the environment needs an
+explicit `AGENTKV_BOOTSTRAP=1` — see `AGENTKV_BOOTSTRAP` in Configuration below.
+
 ## Buy USDC with a card
 
 ```bash
@@ -82,6 +88,7 @@ shell history / `ps` argv.
 | `AGENTKV_PREPAY_WATERMARK` | Top off when tracked credits fall below this (USD). Default `0.5`. Requires `AGENTKV_TOPOFF`. |
 | `AGENTKV_PREPAY_TOPOFF` | Top-off amount (USD, >= 1). Default `1`. Requires `AGENTKV_TOPOFF`. |
 | `AGENTKV_INLINE` | Account-key inline pay-per-op payer. Only value: `awal` — pays each `/kv` op via `npx awal x402 pay` at request time, no prepaid credits required. Requires an authenticated, funded awal. If both `AGENTKV_TOPOFF` and `AGENTKV_INLINE` are set, top-off takes precedence per op. |
+| `AGENTKV_BOOTSTRAP` | Account-key only. `1`/`true` opts in to letting `AGENTKV_TOPOFF`/`AGENTKV_INLINE` pay the *first-ever* op on a brand-new, unfunded account (an `account_not_provisioned` 402), not just ordinary out-of-credit 402s. Auto-`true` when the key came from this CLI's own minted `account.json` (never from an env-supplied `AGENTKV_ACCOUNT_KEY`). Rejected in wallet mode. |
 
 On the awal path `AGENTKV_PREPAY_TOPOFF` is passed only as a `--max-amount` ceiling — the
 worker's `/account/deposit` 402 quotes the actual amount minted (≥ $1 server minimum), capped at

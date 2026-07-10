@@ -116,6 +116,19 @@ interface AgentKVCommon {
    * (`invalid_config`) in wallet mode (a signing wallet pays its own challenges).
    */
   opInlinePayer?: (req: OpInlineRequest) => Promise<OpInlineResponse>;
+  /**
+   * ACCOUNT-KEY MODE: opt in to letting `opInlinePayer` fire on a 402 whose
+   * body `code` is `account_not_provisioned` — i.e. actually fund a brand-new/
+   * unprovisioned `ak_…` account inline, in the same call that discovers it
+   * needs funding. Default `false`: an `account_not_provisioned` 402 throws
+   * instead of paying, because auto-funding it is indistinguishable from
+   * silently funding a typo'd or rotated account key. `insufficient_credits`
+   * 402s (an already-provisioned account that's merely out of credit) always
+   * fire the payer unconditionally — this option only gates the FIRST-EVER
+   * payment on a key. Has no effect in wallet mode: a signing wallet always
+   * pays its own x402 challenges directly, so there is nothing to gate there.
+   */
+  bootstrap?: boolean;
 }
 
 /**

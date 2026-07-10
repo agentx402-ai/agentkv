@@ -106,6 +106,14 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 }
 
 const INSUFFICIENT = { error: "insufficient credits", code: "insufficient_credits" };
+const NOT_PROVISIONED = { error: "account not provisioned", code: "account_not_provisioned" };
+// The worker sends this on both 402 bodies whenever a balance is known (0 for an
+// unprovisioned account) — WalletKV's sendOp sets X-AgentKV-Credits-Remaining
+// whenever balance !== null. Gating-test fixtures below carry it to stay worker-faithful.
+const ZERO_CREDITS = { "X-AgentKV-Credits-Remaining": "0" };
+const NOT_PROVISIONED_MESSAGE =
+  "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
+  "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)";
 const SET_OK = { ok: true, expires_at: "2026-10-02T00:00:00Z" };
 
 function accountClient(payer: (req: any) => Promise<void>, extra: Record<string, unknown> = {}) {
@@ -262,6 +270,154 @@ describe("account-key topoffPayer: reactive hard-402", () => {
   });
 });
 
+describe("account-key topoffPayer: bootstrap gating on account_not_provisioned", () => {
+  it("default (bootstrap unset) + account_not_provisioned 402 → throws the distinguishing error, hook NOT called, no deposit fetch", async () => {
+    let payerCalls = 0;
+    const kv = accountClient(async () => {
+      payerCalls++;
+    });
+    const calls = stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
+
+    await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({
+      code: "account_not_provisioned",
+      status: 402,
+      message: NOT_PROVISIONED_MESSAGE,
+    });
+    expect(payerCalls).toBe(0);
+    expect(calls).toHaveLength(1); // no retry, no top-off deposit fetch
+  });
+
+  it("bootstrap: false (explicit) + account_not_provisioned 402 → same distinguishing error, hook NOT called", async () => {
+    let payerCalls = 0;
+    const kv = accountClient(
+      async () => {
+        payerCalls++;
+      },
+      { bootstrap: false },
+    );
+    stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
+
+    await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({ code: "account_not_provisioned" });
+    expect(payerCalls).toBe(0);
+  });
+
+  it("bootstrap: true + account_not_provisioned 402 → top-off fires and the op is retried (deposit-then-retry semantics)", async () => {
+    let payerCalls = 0;
+    const kv = accountClient(
+      async () => {
+        payerCalls++;
+      },
+      { bootstrap: true },
+    );
+    const calls = stubFetch([
+      () => json(402, NOT_PROVISIONED, ZERO_CREDITS),
+      () => json(200, SET_OK),
+    ]);
+
+    await expect(kv.set("k", { v: 1 })).resolves.toMatchObject({ ok: true });
+    expect(payerCalls).toBe(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].headers.get("Idempotency-Key")).toBe(calls[0].headers.get("Idempotency-Key"));
+  });
+
+  it("insufficient_credits + bootstrap unset → top-off still fires unconditionally (pre-existing behavior unchanged)", async () => {
+    let payerCalls = 0;
+    const kv = accountClient(async () => {
+      payerCalls++;
+    });
+    stubFetch([() => json(402, INSUFFICIENT, ZERO_CREDITS), () => json(200, SET_OK)]);
+
+    await expect(kv.set("k", { v: 1 })).resolves.toMatchObject({ ok: true });
+    expect(payerCalls).toBe(1);
+  });
+
+  it(
+    "op 2 after a bootstrap-denied account_not_provisioned 402 also hits the gated hard-402 path — " +
+      "NOT the ungated proactive top-off (regression: trackBalance seeds knownCredits=0 from the " +
+      "402's X-AgentKV-Credits-Remaining header BEFORE assertBootstrapAllowed throws; left unguarded, " +
+      "op 2's synchronous tryClaimTopoff() claims the proactive single-flight — before the request " +
+      "is even sent, with no 402 body to gate on — and fires a real deposit for an unprovisioned key)",
+    async () => {
+      let payerCalls = 0;
+      const kv = accountClient(async () => {
+        payerCalls++;
+      });
+      // Worker-faithful: account_not_provisioned 402s always carry a balance header (0 for an
+      // unprovisioned account — WalletKV.accountNotProvisioned sends it whenever balance !== null).
+      const calls = stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
+
+      // Op 1: hard-402 path — gate throws, hook NOT called. Expected (pre-existing coverage).
+      await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({
+        code: "account_not_provisioned",
+      });
+      expect(payerCalls).toBe(0);
+
+      // Op 2: without the fix, knownCredits was seeded to 0 by trackBalance() before the gate
+      // threw, so op 2's SYNCHRONOUS tryClaimTopoff() (0 < watermark) claims the proactive
+      // flight BEFORE the request is even sent — no 402 body in scope to gate on — and
+      // runSharedTopoff() fires the hook with NO bootstrap gate. With the fix, knownCredits is
+      // reset to undefined on the throw, so tryClaimTopoff() can't claim and op 2 re-enters the
+      // SAME gated hard-402 path as op 1: exactly one more request, still 402, hook untouched.
+      await kv.set("k", { v: 1 }).catch(() => {});
+      expect(payerCalls).toBe(0); // the documented promise: bootstrap:false must never auto-fund
+      expect(calls).toHaveLength(2); // one request per op — no extra proactive-topoff retry
+    },
+  );
+
+  it(
+    "WINDOW regression: a concurrent op scheduled inside the seed→reset window must never " +
+      "observe knownCredits=0 or claim the proactive top-off (deterministic via a knownCredits " +
+      "setter trap that launches op2 one microtask after any seed — no timing flakiness). " +
+      "Without the fix, trackBalance() seeds knownCredits=0 SYNCHRONOUSLY from the 402's " +
+      "X-AgentKV-Credits-Remaining header before assertBootstrapAllowed()'s reset runs (that " +
+      "reset sits behind an `await res.clone().json()` yield point) — a window in which a " +
+      "concurrently scheduled op's synchronous tryClaimTopoff() can win the single-flight and " +
+      "fire the ungated proactive topoffPayer. With the fix, the gate runs BEFORE trackBalance " +
+      "ingests the header, so a denial throws before any seed happens and the window can't open.",
+    async () => {
+      let payerCalls = 0;
+      const kv = accountClient(async () => {
+        payerCalls++;
+      });
+      stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
+
+      // Trap writes to knownCredits (a plain runtime property despite the TS `private`
+      // annotation). If the old code path ever seeds it to 0, schedule a second op ONE
+      // MICROTASK later — a fair stand-in for any independently scheduled caller task
+      // (parallel tool calls, unawaited sets, retry loops) landing inside the window.
+      let real: number | undefined;
+      let launchedInWindow = false;
+      let valueAtLaunch: number | undefined;
+      let p2: Promise<unknown> | undefined;
+      Object.defineProperty(kv, "knownCredits", {
+        configurable: true,
+        get() {
+          return real;
+        },
+        set(v: number | undefined) {
+          real = v;
+          if (v === 0 && !launchedInWindow) {
+            launchedInWindow = true;
+            queueMicrotask(() => {
+              valueAtLaunch = real; // what a caller's synchronous tryClaimTopoff() would see
+              p2 = kv.set("k2", { v: 2 }).catch(() => {});
+            });
+          }
+        },
+      });
+
+      await kv.set("k", { v: 1 }).catch(() => {});
+      if (p2) await p2;
+      await new Promise((r) => setTimeout(r, 10));
+
+      // The seed must never happen at all for a denied 402 — the gate throws first.
+      expect(launchedInWindow).toBe(false);
+      expect(valueAtLaunch).toBeUndefined();
+      expect(payerCalls).toBe(0);
+    },
+  );
+});
+
 describe("account-key topoffPayer: proactive watermark", () => {
   // watermark $0.50 = 5000 credits. Seed knownCredits below that via the
   // X-AgentKV-Credits-Remaining response header on a first op.
@@ -388,6 +544,54 @@ describe("account-key topoffPayer: prepay.async", () => {
     await new Promise((r) => setTimeout(r, 0)); // let the detached hook settle
     expect(payerCalls).toBe(1);
   });
+
+  it(
+    "WINDOW regression (async mode): a concurrent op scheduled inside the seed→reset window " +
+      "must never observe knownCredits=0 or trigger maybeAsyncTopoff's DETACHED deposit — this " +
+      "path has NO bootstrap gate of its own; its only defense is `knownCredits === undefined`, " +
+      "so a stale 0 seed slips straight through to a real, ungated top-off",
+    async () => {
+      let payerCalls = 0;
+      const kv = accountClient(
+        async () => {
+          payerCalls++;
+        },
+        { prepay: { watermark: 0.5, topoff: 1, async: true }, bootstrap: false },
+      );
+      stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
+
+      let real: number | undefined;
+      let launchedInWindow = false;
+      let valueAtLaunch: number | undefined;
+      let p2: Promise<unknown> | undefined;
+      Object.defineProperty(kv, "knownCredits", {
+        configurable: true,
+        get() {
+          return real;
+        },
+        set(v: number | undefined) {
+          real = v;
+          if (v === 0 && !launchedInWindow) {
+            launchedInWindow = true;
+            queueMicrotask(() => {
+              valueAtLaunch = real;
+              p2 = kv.set("k2", { v: 2 }).catch(() => {});
+            });
+          }
+        },
+      });
+
+      await kv.set("k1", { v: 1 }).catch(() => {});
+      if (p2) await p2;
+      await new Promise((r) => setTimeout(r, 10));
+
+      // The seed must never happen at all for a denied 402 — the gate throws first, so the
+      // setter's `v === 0` trap never fires and maybeAsyncTopoff() never sees a stale 0.
+      expect(launchedInWindow).toBe(false);
+      expect(valueAtLaunch).toBeUndefined();
+      expect(payerCalls).toBe(0);
+    },
+  );
 });
 
 // ---- deposit() aliases the configured payer in account-key mode ----

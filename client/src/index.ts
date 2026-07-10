@@ -1,5 +1,5 @@
 // client/src/index.ts
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 import { fetchWithRetry } from "@agentx402-ai/core";
 import { hexToBytes } from "viem";
@@ -158,6 +158,11 @@ export class AgentKV {
    * set()/get(), which gate on `!this.topoffPayer`).
    */
   private readonly opInlinePayer?: (req: OpInlineRequest) => Promise<OpInlineResponse>;
+  /**
+   * Opt-in gate (default false) letting a payer hook fire on an
+   * `account_not_provisioned` 402 — see `AgentKVOptions.bootstrap`.
+   */
+  private readonly bootstrap: boolean = false;
   /** Last-known credit balance as an EXACT integer credit count (never USD floats). */
   private knownCredits?: number;
   /** Synchronous single-flight guard: at most one in-flight top-off at a time. */
@@ -221,6 +226,12 @@ export class AgentKV {
       // Unlike topoffPayer, opInlinePayer needs no `prepay`: it is pay-per-op,
       // fired directly off a hard 402 with no watermark/top-off machinery.
       this.opInlinePayer = opts.opInlinePayer;
+    }
+    if (opts.bootstrap !== undefined) {
+      if (typeof opts.bootstrap !== "boolean") {
+        throw new AgentKVError("bootstrap must be a boolean", "invalid_config", 0);
+      }
+      this.bootstrap = opts.bootstrap;
     }
     if (opts.prepay) {
       if (isAccountMode && !opts.topoffPayer) {
@@ -761,10 +772,31 @@ export class AgentKV {
           }),
         );
       let res = await sendBearer();
+      // Gate BEFORE ingesting the balance: trackBalance() reads
+      // `X-AgentKV-Credits-Remaining: 0` off an unprovisioned account's 402 and would
+      // otherwise seed `knownCredits = 0` synchronously, right here, before
+      // assertBootstrapAllowed() gets a chance to reset it (that reset sits behind the
+      // `await res.clone().json()` yield point inside the gate). In that window a
+      // concurrently scheduled op (parallel tool calls, unawaited sets, retry loops) can
+      // observe `knownCredits === 0`, synchronously win `tryClaimTopoff()`, and fire the
+      // ungated proactive `topoffPayer` — auto-funding an unprovisioned key with bootstrap
+      // off. Checking the gate first means a denial throws before any seed happens, so the
+      // window never opens. Shared choke point for BOTH the topoffPayer hard-402 branch and
+      // the opInlinePayer branch below — they both react to this same response. The calls to
+      // `assertBootstrapAllowed()` further down are kept as belt-and-braces (harmless no-ops
+      // once this one has already gated) and its internal `knownCredits = undefined` reset
+      // stays in place as a second line of defense.
+      if (res.status === 402) {
+        await this.assertBootstrapAllowed(res);
+      }
       this.trackBalance(res);
       // Hard 402: with a payer hook, buy a top-off and retry ONCE (same key = exactly-once).
       // Skipped after a successful proactive deposit (`!toppedOff`) so at most one deposit/op.
       if (res.status === 402 && this.topoffPayer && !toppedOff) {
+        // Gate BOTH sub-paths below (the direct `runSharedTopoff()` claim and the sibling
+        // `topoffPromise` await) before either can trigger/observe a real deposit — this is
+        // the choke point for every topoffPayer entry point reachable from a hard 402.
+        await this.assertBootstrapAllowed(res);
         if (!flight.claimed) flight.claimed = this.tryClaimTopoffOnFault();
         if (flight.claimed && this.topoffFitsSessionCap()) {
           await this.runSharedTopoff();
@@ -782,6 +814,7 @@ export class AgentKV {
       // Inline opt-in: route the WHOLE op through an external x402 transport (e.g. awal)
       // instead of a credit top-off. Mutually exclusive with topoffPayer PER OP.
       if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
+        await this.assertBootstrapAllowed(res);
         // Bound by the caller's per-op cap and pre-reserve against the session cap BEFORE
         // paying — the credit-cost pre-flight only checked the credit price, not real USDC.
         const inlineCeilingUsd = this.inlineOpCeilingUsd();
@@ -1427,6 +1460,41 @@ export class AgentKV {
     // of THIS account — funding credits the same namespace this client reads/writes.
     if (this.prepay && Number.isFinite(result.balance)) this.knownCredits = result.balance;
     return result;
+  }
+
+  /**
+   * Bootstrap gating (spec 2026-07-10): an `account_not_provisioned` 402 is payable, but
+   * auto-funding it can silently fund a TYPO'D key — require the explicit opt-in.
+   * `insufficient_credits` (provisioned account) keeps firing unconditionally, as before.
+   * Shared by BOTH account-key top-off paths (`topoffPayer` hard-402 handling and the
+   * `opInlinePayer` branch) so every entry point that can trigger a real on-chain deposit for
+   * an unprovisioned account is gated identically. Clones before reading: `res` may still need
+   * to be read by `asError()`/`errorFromBody()` on other branches, and a Response body can only
+   * be consumed once.
+   */
+  private async assertBootstrapAllowed(res: Response): Promise<void> {
+    const errBody = (await res
+      .clone()
+      .json()
+      .catch(() => undefined)) as { code?: string } | undefined;
+    if (errBody?.code === "account_not_provisioned" && !this.bootstrap) {
+      // An unprovisioned account has no meaningful credit balance. The worker still sends
+      // `X-AgentKV-Credits-Remaining: 0` on this 402 (WalletKV.accountNotProvisioned).
+      // `performOp()` now calls this gate BEFORE `trackBalance()` ingests that header, so a
+      // denial here throws before `knownCredits` is ever seeded to 0 — closing the window
+      // where a concurrent op's synchronous `tryClaimTopoff()` could observe 0 and fire the
+      // proactive `topoffPayer` ungated. The reset below is belt-and-braces for any call site
+      // that (now or in the future) reaches this gate AFTER a seed has already happened —
+      // it re-arms the NEXT op's synchronous `tryClaimTopoff()` (0 < watermark) to fall
+      // through instead of claiming the proactive single-flight ungated.
+      this.knownCredits = undefined;
+      throw new AgentKVError(
+        "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
+          "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)",
+        "account_not_provisioned",
+        402,
+      );
+    }
   }
 
   /** Shared by `asError` (a real `Response`) and the `opInlinePayer` path (a plain `{status,body}`). */
