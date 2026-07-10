@@ -106,6 +106,10 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 }
 
 const INSUFFICIENT = { error: "insufficient credits", code: "insufficient_credits" };
+const NOT_PROVISIONED = { error: "account not provisioned", code: "account_not_provisioned" };
+const NOT_PROVISIONED_MESSAGE =
+  "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
+  "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)";
 const SET_OK = { ok: true, expires_at: "2026-10-02T00:00:00Z" };
 
 function accountClient(payer: (req: any) => Promise<void>, extra: Record<string, unknown> = {}) {
@@ -257,6 +261,65 @@ describe("account-key topoffPayer: reactive hard-402", () => {
       { maxSpendUsd: 0.01 }, // per-op cap far below the $1 top-off; write cost is $0.0005
     );
     stubFetch([() => json(402, INSUFFICIENT), () => json(200, SET_OK)]);
+    await expect(kv.set("k", { v: 1 })).resolves.toMatchObject({ ok: true });
+    expect(payerCalls).toBe(1);
+  });
+});
+
+describe("account-key topoffPayer: bootstrap gating on account_not_provisioned", () => {
+  it("default (bootstrap unset) + account_not_provisioned 402 → throws the distinguishing error, hook NOT called, no deposit fetch", async () => {
+    let payerCalls = 0;
+    const kv = accountClient(async () => {
+      payerCalls++;
+    });
+    const calls = stubFetch([() => json(402, NOT_PROVISIONED)]);
+
+    await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({
+      code: "account_not_provisioned",
+      status: 402,
+      message: NOT_PROVISIONED_MESSAGE,
+    });
+    expect(payerCalls).toBe(0);
+    expect(calls).toHaveLength(1); // no retry, no top-off deposit fetch
+  });
+
+  it("bootstrap: false (explicit) + account_not_provisioned 402 → same distinguishing error, hook NOT called", async () => {
+    let payerCalls = 0;
+    const kv = accountClient(
+      async () => {
+        payerCalls++;
+      },
+      { bootstrap: false },
+    );
+    stubFetch([() => json(402, NOT_PROVISIONED)]);
+
+    await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({ code: "account_not_provisioned" });
+    expect(payerCalls).toBe(0);
+  });
+
+  it("bootstrap: true + account_not_provisioned 402 → top-off fires and the op is retried (deposit-then-retry semantics)", async () => {
+    let payerCalls = 0;
+    const kv = accountClient(
+      async () => {
+        payerCalls++;
+      },
+      { bootstrap: true },
+    );
+    const calls = stubFetch([() => json(402, NOT_PROVISIONED), () => json(200, SET_OK)]);
+
+    await expect(kv.set("k", { v: 1 })).resolves.toMatchObject({ ok: true });
+    expect(payerCalls).toBe(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].headers.get("Idempotency-Key")).toBe(calls[0].headers.get("Idempotency-Key"));
+  });
+
+  it("insufficient_credits + bootstrap unset → top-off still fires unconditionally (pre-existing behavior unchanged)", async () => {
+    let payerCalls = 0;
+    const kv = accountClient(async () => {
+      payerCalls++;
+    });
+    stubFetch([() => json(402, INSUFFICIENT), () => json(200, SET_OK)]);
+
     await expect(kv.set("k", { v: 1 })).resolves.toMatchObject({ ok: true });
     expect(payerCalls).toBe(1);
   });

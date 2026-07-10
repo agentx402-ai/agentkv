@@ -776,6 +776,10 @@ export class AgentKV {
       // Hard 402: with a payer hook, buy a top-off and retry ONCE (same key = exactly-once).
       // Skipped after a successful proactive deposit (`!toppedOff`) so at most one deposit/op.
       if (res.status === 402 && this.topoffPayer && !toppedOff) {
+        // Gate BOTH sub-paths below (the direct `runSharedTopoff()` claim and the sibling
+        // `topoffPromise` await) before either can trigger/observe a real deposit — this is
+        // the choke point for every topoffPayer entry point reachable from a hard 402.
+        await this.assertBootstrapAllowed(res);
         if (!flight.claimed) flight.claimed = this.tryClaimTopoffOnFault();
         if (flight.claimed && this.topoffFitsSessionCap()) {
           await this.runSharedTopoff();
@@ -793,24 +797,7 @@ export class AgentKV {
       // Inline opt-in: route the WHOLE op through an external x402 transport (e.g. awal)
       // instead of a credit top-off. Mutually exclusive with topoffPayer PER OP.
       if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
-        // Bootstrap gating (spec 2026-07-10): an account_not_provisioned 402 is
-        // payable, but auto-funding it can silently fund a TYPO'D key — require
-        // the explicit opt-in. insufficient_credits (provisioned account) keeps
-        // firing unconditionally, as before. Clone before reading: `res` may
-        // still need to be read by asError()/errorFromBody() below on other
-        // branches, and a Response body can only be consumed once.
-        const errBody = (await res
-          .clone()
-          .json()
-          .catch(() => undefined)) as { code?: string } | undefined;
-        if (errBody?.code === "account_not_provisioned" && !this.bootstrap) {
-          throw new AgentKVError(
-            "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
-              "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)",
-            "account_not_provisioned",
-            402,
-          );
-        }
+        await this.assertBootstrapAllowed(res);
         // Bound by the caller's per-op cap and pre-reserve against the session cap BEFORE
         // paying — the credit-cost pre-flight only checked the credit price, not real USDC.
         const inlineCeilingUsd = this.inlineOpCeilingUsd();
@@ -1456,6 +1443,31 @@ export class AgentKV {
     // of THIS account — funding credits the same namespace this client reads/writes.
     if (this.prepay && Number.isFinite(result.balance)) this.knownCredits = result.balance;
     return result;
+  }
+
+  /**
+   * Bootstrap gating (spec 2026-07-10): an `account_not_provisioned` 402 is payable, but
+   * auto-funding it can silently fund a TYPO'D key — require the explicit opt-in.
+   * `insufficient_credits` (provisioned account) keeps firing unconditionally, as before.
+   * Shared by BOTH account-key top-off paths (`topoffPayer` hard-402 handling and the
+   * `opInlinePayer` branch) so every entry point that can trigger a real on-chain deposit for
+   * an unprovisioned account is gated identically. Clones before reading: `res` may still need
+   * to be read by `asError()`/`errorFromBody()` on other branches, and a Response body can only
+   * be consumed once.
+   */
+  private async assertBootstrapAllowed(res: Response): Promise<void> {
+    const errBody = (await res
+      .clone()
+      .json()
+      .catch(() => undefined)) as { code?: string } | undefined;
+    if (errBody?.code === "account_not_provisioned" && !this.bootstrap) {
+      throw new AgentKVError(
+        "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
+          "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)",
+        "account_not_provisioned",
+        402,
+      );
+    }
   }
 
   /** Shared by `asError` (a real `Response`) and the `opInlinePayer` path (a plain `{status,body}`). */
