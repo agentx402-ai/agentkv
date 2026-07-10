@@ -107,6 +107,10 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 
 const INSUFFICIENT = { error: "insufficient credits", code: "insufficient_credits" };
 const NOT_PROVISIONED = { error: "account not provisioned", code: "account_not_provisioned" };
+// The worker sends this on both 402 bodies whenever a balance is known (0 for an
+// unprovisioned account) — WalletKV's sendOp sets X-AgentKV-Credits-Remaining
+// whenever balance !== null. Gating-test fixtures below carry it to stay worker-faithful.
+const ZERO_CREDITS = { "X-AgentKV-Credits-Remaining": "0" };
 const NOT_PROVISIONED_MESSAGE =
   "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
   "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)";
@@ -272,7 +276,7 @@ describe("account-key topoffPayer: bootstrap gating on account_not_provisioned",
     const kv = accountClient(async () => {
       payerCalls++;
     });
-    const calls = stubFetch([() => json(402, NOT_PROVISIONED)]);
+    const calls = stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
 
     await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({
       code: "account_not_provisioned",
@@ -291,7 +295,7 @@ describe("account-key topoffPayer: bootstrap gating on account_not_provisioned",
       },
       { bootstrap: false },
     );
-    stubFetch([() => json(402, NOT_PROVISIONED)]);
+    stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
 
     await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({ code: "account_not_provisioned" });
     expect(payerCalls).toBe(0);
@@ -305,7 +309,10 @@ describe("account-key topoffPayer: bootstrap gating on account_not_provisioned",
       },
       { bootstrap: true },
     );
-    const calls = stubFetch([() => json(402, NOT_PROVISIONED), () => json(200, SET_OK)]);
+    const calls = stubFetch([
+      () => json(402, NOT_PROVISIONED, ZERO_CREDITS),
+      () => json(200, SET_OK),
+    ]);
 
     await expect(kv.set("k", { v: 1 })).resolves.toMatchObject({ ok: true });
     expect(payerCalls).toBe(1);
@@ -318,11 +325,44 @@ describe("account-key topoffPayer: bootstrap gating on account_not_provisioned",
     const kv = accountClient(async () => {
       payerCalls++;
     });
-    stubFetch([() => json(402, INSUFFICIENT), () => json(200, SET_OK)]);
+    stubFetch([() => json(402, INSUFFICIENT, ZERO_CREDITS), () => json(200, SET_OK)]);
 
     await expect(kv.set("k", { v: 1 })).resolves.toMatchObject({ ok: true });
     expect(payerCalls).toBe(1);
   });
+
+  it(
+    "op 2 after a bootstrap-denied account_not_provisioned 402 also hits the gated hard-402 path — " +
+      "NOT the ungated proactive top-off (regression: trackBalance seeds knownCredits=0 from the " +
+      "402's X-AgentKV-Credits-Remaining header BEFORE assertBootstrapAllowed throws; left unguarded, " +
+      "op 2's synchronous tryClaimTopoff() claims the proactive single-flight — before the request " +
+      "is even sent, with no 402 body to gate on — and fires a real deposit for an unprovisioned key)",
+    async () => {
+      let payerCalls = 0;
+      const kv = accountClient(async () => {
+        payerCalls++;
+      });
+      // Worker-faithful: account_not_provisioned 402s always carry a balance header (0 for an
+      // unprovisioned account — WalletKV.accountNotProvisioned sends it whenever balance !== null).
+      const calls = stubFetch([() => json(402, NOT_PROVISIONED, ZERO_CREDITS)]);
+
+      // Op 1: hard-402 path — gate throws, hook NOT called. Expected (pre-existing coverage).
+      await expect(kv.set("k", { v: 1 })).rejects.toMatchObject({
+        code: "account_not_provisioned",
+      });
+      expect(payerCalls).toBe(0);
+
+      // Op 2: without the fix, knownCredits was seeded to 0 by trackBalance() before the gate
+      // threw, so op 2's SYNCHRONOUS tryClaimTopoff() (0 < watermark) claims the proactive
+      // flight BEFORE the request is even sent — no 402 body in scope to gate on — and
+      // runSharedTopoff() fires the hook with NO bootstrap gate. With the fix, knownCredits is
+      // reset to undefined on the throw, so tryClaimTopoff() can't claim and op 2 re-enters the
+      // SAME gated hard-402 path as op 1: exactly one more request, still 402, hook untouched.
+      await kv.set("k", { v: 1 }).catch(() => {});
+      expect(payerCalls).toBe(0); // the documented promise: bootstrap:false must never auto-fund
+      expect(calls).toHaveLength(2); // one request per op — no extra proactive-topoff retry
+    },
+  );
 });
 
 describe("account-key topoffPayer: proactive watermark", () => {

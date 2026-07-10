@@ -1461,6 +1461,16 @@ export class AgentKV {
       .json()
       .catch(() => undefined)) as { code?: string } | undefined;
     if (errBody?.code === "account_not_provisioned" && !this.bootstrap) {
+      // An unprovisioned account has no meaningful credit balance. The worker still sends
+      // `X-AgentKV-Credits-Remaining: 0` on this 402 (WalletKV.accountNotProvisioned), and
+      // `trackBalance()` (called on every response, including this one) ingests it BEFORE
+      // this gate runs — seeding `knownCredits = 0`. Left alone, that seed would make the
+      // NEXT op's synchronous `tryClaimTopoff()` (0 < watermark) claim the proactive
+      // single-flight and fire `runSharedTopoff()` with NO bootstrap gate (the gate only
+      // guards the hard-402 branch, not the proactive one) — a real >=$1 deposit funding the
+      // unprovisioned key one op later. Reset it here so the next op re-enters this same
+      // gated hard-402 path instead of the proactive one.
+      this.knownCredits = undefined;
       throw new AgentKVError(
         "account not provisioned — deposit (fundAccount() / agentkv deposit) or opt in to " +
           "pay-per-call bootstrap (bootstrap: true / AGENTKV_BOOTSTRAP=1)",
