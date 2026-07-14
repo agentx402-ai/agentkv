@@ -81,6 +81,18 @@ interface AgentKVCommon {
   timeoutMs?: number;
   /** Injectable `fetch` for proxies / instrumentation / testing. Defaults to the global `fetch`. */
   fetch?: typeof fetch;
+  /**
+   * Pin the payment recipient across EVERY paying path on this client. When set, any
+   * server-supplied x402 challenge whose `payTo` differs from this address is rejected
+   * (`payto_mismatch`) BEFORE the EIP-3009 authorization is signed. This closes the gap
+   * where the automatic inline/top-off paths (proactive single-shot + hard-402 fallback)
+   * pinned only the amount ceiling and the network/asset, but not the recipient — a spoofed
+   * or compromised worker could otherwise hand a valid-shaped challenge that pays an
+   * attacker address up to the per-op cap. The per-call `expectedPayTo` on
+   * `deposit()`/`fundAccount()` overrides this default for that one call. Must be a
+   * checksummable EVM address; validated at construction (`invalid_config`).
+   */
+  expectedPayTo?: string;
   /** Opt-in Discounted Prepay. When set, the client keeps a credit balance topped up. */
   prepay?: {
     /** Top off when the tracked balance (USD) falls below this. */

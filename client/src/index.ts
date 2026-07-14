@@ -2,7 +2,7 @@
 export const VERSION = "0.2.1";
 
 import { fetchWithRetry } from "@agentx402-ai/core";
-import { hexToBytes } from "viem";
+import { getAddress, hexToBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { isAccountKeyFormat } from "./account";
 import {
@@ -136,6 +136,12 @@ export class AgentKV {
   readonly network: string;
   readonly maxSpendUsd?: number;
   readonly maxSessionSpendUsd?: number;
+  /**
+   * Optional client-level x402 recipient pin (checksummed). Threaded into every
+   * `buildPaymentHeader` call site so a challenge with an unexpected `payTo` is
+   * rejected before signing. A per-call `expectedPayTo` overrides this default.
+   */
+  private readonly expectedPayTo?: string;
   /** Bounded internal retries on transient failures (network error / 5xx). */
   readonly maxRetries: number;
   private readonly timeoutMs?: number;
@@ -183,6 +189,21 @@ export class AgentKV {
     this.maxRetries = Math.max(0, Math.floor(opts.retries ?? 2));
     this.timeoutMs = opts.timeoutMs;
     this.fetchImpl = opts.fetch;
+
+    // Optional recipient pin: normalize to a checksummed address up front so a
+    // malformed value fails fast (invalid_config) at construction instead of with a
+    // cryptic viem throw deep inside buildPaymentHeader on the first paying op.
+    if (opts.expectedPayTo !== undefined) {
+      try {
+        this.expectedPayTo = getAddress(opts.expectedPayTo);
+      } catch {
+        throw new AgentKVError(
+          "expectedPayTo must be a valid 0x address",
+          "invalid_config",
+          0,
+        );
+      }
+    }
 
     // Step 4a: validate prepay at construction (fail fast, not after a round-trip).
     const isAccountMode = "accountKey" in opts && opts.accountKey != null;
@@ -862,6 +883,7 @@ export class AgentKV {
         paymentSignature = await buildPaymentHeader(this.requireSigner(), this.challengeTemplate, {
           amountAtomic: this.topoffAtomic,
           expectedNetwork: this.network,
+          expectedPayTo: this.expectedPayTo,
           // Pin the nonce to the op's idempotency key so a retry reuses the auth and the
           // server dedupes the mint + the op.
           nonce: nonceFromIdempotencyKey(idempotencyKey),
@@ -928,6 +950,7 @@ export class AgentKV {
       const paymentSignature = await buildPaymentHeader(this.requireSigner(), challenge, {
         amountAtomic: topoffHere ? this.topoffAtomic : undefined,
         expectedNetwork: this.network,
+        expectedPayTo: this.expectedPayTo,
         nonce: nonceFromIdempotencyKey(idempotencyKey),
       });
       res = await this.fetchWithRetry(url, () =>
@@ -1347,7 +1370,8 @@ export class AgentKV {
       const paymentSignature = await buildPaymentHeader(this.requireSigner(), challenge, {
         amountAtomic,
         expectedNetwork: this.network,
-        expectedPayTo: opts.expectedPayTo,
+        // Per-call pin overrides the client-level default for this one deposit.
+        expectedPayTo: opts.expectedPayTo ?? this.expectedPayTo,
         nonce: nonceFromIdempotencyKey(opKey),
       });
       res = await this.fetchWithRetry(url, () => ({
@@ -1449,7 +1473,8 @@ export class AgentKV {
       const paymentSignature = await buildPaymentHeader(payer, challenge, {
         amountAtomic,
         expectedNetwork: this.network,
-        expectedPayTo: opts.expectedPayTo,
+        // Per-call pin overrides the client-level default for this one funding call.
+        expectedPayTo: opts.expectedPayTo ?? this.expectedPayTo,
         nonce,
       });
       res = await this.fetchWithRetry(url, () => ({
