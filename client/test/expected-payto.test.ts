@@ -56,12 +56,17 @@ describe("client-level expectedPayTo recipient pin", () => {
   });
 
   it("rejects a malformed expectedPayTo at construction (fail fast, not on first paying op)", () => {
-    expect(() => new AgentKV({ privateKey: PK_A, endpoint: ENDPOINT, expectedPayTo: "not-an-address" }))
-      .toThrow(/expectedPayTo must be a valid 0x address/);
+    expect(
+      () => new AgentKV({ privateKey: PK_A, endpoint: ENDPOINT, expectedPayTo: "not-an-address" }),
+    ).toThrow(/expectedPayTo must be a valid 0x address/);
   });
 
   it("normalizes a lowercase expectedPayTo to a checksummed address (no throw)", () => {
-    const kv = new AgentKV({ privateKey: PK_A, endpoint: ENDPOINT, expectedPayTo: PAYTO.toLowerCase() });
+    const kv = new AgentKV({
+      privateKey: PK_A,
+      endpoint: ENDPOINT,
+      expectedPayTo: PAYTO.toLowerCase(),
+    });
     expect(kv).toBeInstanceOf(AgentKV);
   });
 
@@ -71,10 +76,13 @@ describe("client-level expectedPayTo recipient pin", () => {
     mockFetch((_url, init) => {
       attempt++;
       if (attempt === 1) {
-        return new Response(JSON.stringify({ error: "payment required", code: "payment_required" }), {
-          status: 402,
-          headers: { "PAYMENT-REQUIRED": challengeFor(PAYTO) },
-        });
+        return new Response(
+          JSON.stringify({ error: "payment required", code: "payment_required" }),
+          {
+            status: 402,
+            headers: { "PAYMENT-REQUIRED": challengeFor(PAYTO) },
+          },
+        );
       }
       // The paid retry must target the pinned recipient.
       const paySig = new Headers(init.headers).get("PAYMENT-SIGNATURE") as string;
@@ -112,10 +120,13 @@ describe("client-level expectedPayTo recipient pin", () => {
     mockFetch((_url, init) => {
       attempt++;
       if (attempt === 1) {
-        return new Response(JSON.stringify({ error: "payment required", code: "payment_required" }), {
-          status: 402,
-          headers: { "PAYMENT-REQUIRED": challengeFor(PAYTO, "5000000") },
-        });
+        return new Response(
+          JSON.stringify({ error: "payment required", code: "payment_required" }),
+          {
+            status: 402,
+            headers: { "PAYMENT-REQUIRED": challengeFor(PAYTO, "5000000") },
+          },
+        );
       }
       const paySig = new Headers(init.headers).get("PAYMENT-SIGNATURE") as string;
       expect(getAddress(JSON.parse(atob(paySig)).payload.authorization.to)).toBe(getAddress(PAYTO));

@@ -197,11 +197,7 @@ export class AgentKV {
       try {
         this.expectedPayTo = getAddress(opts.expectedPayTo);
       } catch {
-        throw new AgentKVError(
-          "expectedPayTo must be a valid 0x address",
-          "invalid_config",
-          0,
-        );
+        throw new AgentKVError("expectedPayTo must be a valid 0x address", "invalid_config", 0);
       }
     }
 
