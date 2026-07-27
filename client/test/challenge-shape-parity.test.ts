@@ -1,11 +1,11 @@
 // client/test/challenge-shape-parity.test.ts
 //
-// Mirror of the WORKER's 402 PAYMENT-REQUIRED challenge-shape pin
-// (agentkv-worker `workers/agentkv/test/challenge-shape-parity.test.ts`, which asserts
-// exactly what `X402Verifier.challenge()` emits — the single source of truth). Here we
+// Mirror of the SERVICE's 402 PAYMENT-REQUIRED challenge-shape pin. The service side
+// keeps a matching test asserting exactly what its x402 verifier emits — that is the
+// single source of truth for the envelope; this file is the client half. Here we
 // pin the fields the CLIENT actually reads off the envelope + each `accepts` entry, and
-// PROVE it by driving a worker-shaped fixture through the real client consumers
-// (`challengePriceUsd` + `buildPaymentHeader`). If the worker ever drops/renames a field
+// PROVE it by driving a service-shaped fixture through the real client consumers
+// (`challengePriceUsd` + `buildPaymentHeader`). If the service ever drops/renames a field
 // the client signs over, one of these two mirrored tests breaks — the cross-repo gate a
 // single typecheck can't provide (client and server are separate repos).
 //
