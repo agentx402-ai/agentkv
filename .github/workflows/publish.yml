@@ -27,7 +27,7 @@ jobs:
     environment: release
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           # Node 24 bundles npm >= 11.5.1 (required for OIDC trusted publishing)
           # NATIVELY. Do not reintroduce `npm install -g npm@latest`: npm
