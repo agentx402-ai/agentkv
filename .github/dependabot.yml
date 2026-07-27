@@ -8,6 +8,15 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: "development"
+    ignore:
+      # TypeScript 7 is a full rewrite whose compiler internals the bundler reads,
+      # so a major bump breaks `npm run build` on every platform:
+      #   TypeError: Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')
+      # It also blocked four unrelated dev bumps grouped alongside it (PR #9).
+      # Adopt TS majors deliberately, upgrading the build toolchain in the same PR —
+      # minor and patch updates still flow through normally.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
