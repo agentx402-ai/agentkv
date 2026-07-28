@@ -222,8 +222,7 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
   it("get decrypts the value returned by the server", async () => {
     const original = { hello: "world" };
     // Encrypt under the PRIMARY domain-separated value key (what a current client writes),
-    // so this exercises the primary decrypt path — not the legacy-key fallback (covered
-    // separately by the "no-magic LEGACY 0.1.0 blob" test below).
+    // so this exercises the primary decrypt path, not the legacy-key fallback.
     const km = deriveKeyMaterial(hexToBytes(PK_A));
     const { encrypt, hashKey } = await import("../src/crypto");
     const ciphertext = await encrypt(
@@ -509,6 +508,53 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     expect(attempt).toBe(2);
     expect(paidAmount).toBe("5000000"); // $5 tier selected by amount
   });
+
+  it.each([
+    [1.5, "1500000"],
+    [33.3, "33300000"], // 33.3*1e6 = 33299999.999999996 — the relative-epsilon case
+  ] as const)(
+    "deposit(%s) accepts the fractional amount and signs exactly %s atomic",
+    async (usd, atomic) => {
+      const challenge = btoa(
+        JSON.stringify({
+          x402Version: 2,
+          accepts: [
+            {
+              scheme: "exact",
+              network: "eip155:8453",
+              amount: atomic,
+              asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              payTo: "0x0000000000000000000000000000000000000001",
+              maxTimeoutSeconds: 600,
+              extra: { name: "USDC", version: "2" },
+            },
+          ],
+        }),
+      );
+      let attempt = 0;
+      let paidAmount: string | null = null;
+      mockFetch((_url, init) => {
+        attempt++;
+        const h = new Headers(init.headers);
+        if (attempt === 1) {
+          return new Response(
+            JSON.stringify({ error: "payment required", code: "payment_required" }),
+            {
+              status: 402,
+              headers: { "PAYMENT-REQUIRED": challenge },
+            },
+          );
+        }
+        paidAmount = JSON.parse(atob(h.get("PAYMENT-SIGNATURE") as string)).payload.authorization
+          .value;
+        return new Response(JSON.stringify({ credits_added: 1, balance: 1 }), { status: 200 });
+      });
+      const res = await kv.deposit(usd);
+      expect(res.balance).toBe(1);
+      expect(attempt).toBe(2);
+      expect(paidAmount).toBe(atomic);
+    },
+  );
 
   it("get(key, {idempotencyKey}) sends the key + pins a deterministic payment nonce across retries (H1)", async () => {
     const challenge = btoa(
