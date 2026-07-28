@@ -187,6 +187,48 @@ describe("MCP account-key mode awareness", () => {
   });
 });
 
+describe("MCP agentkv_list_keys", () => {
+  const base = {
+    set: vi.fn(),
+    get: vi.fn(),
+    delete: vi.fn(),
+    deposit: vi.fn(),
+    balance: vi.fn(),
+    address: "0xabc",
+  };
+
+  it("forwards cursor + limit and returns the page as JSON", async () => {
+    const calls: any[][] = [];
+    const client = {
+      ...base,
+      listKeys: async (...a: any[]) => {
+        calls.push(a);
+        return { keys: ["alpha", "beta"], cursor: "next-1" };
+      },
+    };
+    const server = buildMcpServer(client as any);
+    const tools = (server as any)._registeredTools;
+    const res = await tools.agentkv_list_keys.handler({ cursor: "c-0", limit: 25 }, {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toEqual({ cursor: "c-0", limit: 25 });
+    expect(JSON.parse(res.content[0].text)).toEqual({ keys: ["alpha", "beta"], cursor: "next-1" });
+  });
+
+  it("first page: omitted cursor is passed as null, limit as undefined", async () => {
+    const calls: any[][] = [];
+    const client = {
+      ...base,
+      listKeys: async (...a: any[]) => {
+        calls.push(a);
+        return { keys: [], cursor: null };
+      },
+    };
+    const server = buildMcpServer(client as any);
+    await (server as any)._registeredTools.agentkv_list_keys.handler({}, {});
+    expect(calls[0][0]).toEqual({ cursor: null, limit: undefined });
+  });
+});
+
 describe("MCP secret tools (LLM-free)", () => {
   const SECRET = "sk-live-DEADBEEF-do-not-leak";
 
