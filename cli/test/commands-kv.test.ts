@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
+import { runListKeys } from "../src/commands/kv";
 
 function fakeClient(overrides: Record<string, any> = {}) {
   return { ...defaultClient(), ...overrides };
@@ -413,5 +414,31 @@ describe("runListKeys — pagination (list-keys)", () => {
     });
     expect(code).toBe(0);
     expect(listKeys).toHaveBeenCalledWith({ limit: 2 }); // number, not the string "2"
+  });
+
+  it.each(["abc", "0", "2.5", "-1"])(
+    "list-keys --limit %s is rejected before any client call",
+    async (bad) => {
+      const client = { listKeys: vi.fn() };
+      await expect(
+        runListKeys(["--limit", bad], {
+          client: client as any,
+          stdout: () => {},
+          stderr: () => {},
+        }),
+      ).rejects.toThrow(/--limit/);
+      expect(client.listKeys).not.toHaveBeenCalled();
+    },
+  );
+
+  it("list-keys --limit 3 forwards the numeric limit to the client", async () => {
+    const client = { listKeys: vi.fn(async () => ({ keys: [], cursor: null })) };
+    const code = await runListKeys(["--limit", "3"], {
+      client: client as any,
+      stdout: () => {},
+      stderr: () => {},
+    });
+    expect(code).toBe(0);
+    expect(client.listKeys).toHaveBeenCalledWith({ limit: 3 });
   });
 });
