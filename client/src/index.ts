@@ -109,7 +109,7 @@ export const DEFAULT_MAX_OP_USD = 0.05;
  * rejects the exactly-whole-atomic $33.30 / $1.005. The relative test still rejects genuine
  * sub-atomic fractions (e.g. 1.0000005, relative error ~5e-7 ≫ 1e-9).
  */
-function toWholeAtomicUsd(amountUsd: number): number | null {
+export function toWholeAtomicUsd(amountUsd: number): number | null {
   if (!Number.isFinite(amountUsd)) return null;
   const atomic = Math.round(amountUsd * 1_000_000);
   if (!Number.isInteger(atomic) || atomic <= 0) return null;

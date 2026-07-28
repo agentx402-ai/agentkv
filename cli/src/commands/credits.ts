@@ -1,3 +1,4 @@
+import { toWholeAtomicUsd } from "@agentkv/client";
 import { parseFlags } from "../args";
 import { EXIT, printError, printJson, type Writer } from "../output";
 
@@ -12,9 +13,11 @@ export async function runCredits(
   }
   const { positionals } = parseFlags(args);
   const usd = Number(positionals[0]);
-  // Reject sub-$1 and sub-atomic (fractional) amounts up front, mirroring the
-  // client's deposit() guard, so the CLI fails with USAGE instead of a round-trip.
-  if (!Number.isFinite(usd) || usd < 1 || usd * 1_000_000 !== Math.round(usd * 1_000_000)) {
+  // Same acceptance rule as client deposit() — the client's relative-epsilon converter,
+  // not exact float equality (33.3*1e6 !== Math.round(33.3*1e6) in IEEE-754, so the old
+  // check rejected whole-atomic amounts the client accepts). Fails with USAGE before a
+  // round-trip.
+  if (!Number.isFinite(usd) || usd < 1 || toWholeAtomicUsd(usd) === null) {
     printError(
       io.stderr,
       "usage",
