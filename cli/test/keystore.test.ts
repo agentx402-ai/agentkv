@@ -21,6 +21,22 @@ const clean = (env: NodeJS.ProcessEnv) =>
   rmSync(env.AGENTKV_HOME as string, { recursive: true, force: true });
 
 describe("keystore", () => {
+  it("corrupt wallet.json fails loud with the path — not raw EEXIST, not 'No wallet yet'", () => {
+    const env = tmpEnv();
+    try {
+      writeFileSync(walletPath(env), "{not json", { mode: 0o600 });
+      expect(() => getOrCreateStoredWallet(env)).toThrow(
+        /wallet file .*wallet\.json.* not valid JSON/,
+      );
+      expect(() => peekStoredWallet(env)).toThrow(/not valid JSON/);
+
+      writeFileSync(walletPath(env), JSON.stringify({ address: "0xabc" }), { mode: 0o600 });
+      expect(() => getOrCreateStoredWallet(env)).toThrow(/no valid privateKey/);
+    } finally {
+      clean(env);
+    }
+  });
+
   it("mints a wallet on first call, then reuses it (idempotent)", () => {
     const env = tmpEnv();
     try {
@@ -71,21 +87,19 @@ describe("keystore", () => {
     }
   });
 
-  it("first-run EEXIST recovery: a CORRUPT racer file re-read as null rethrows EEXIST (never a losing key)", () => {
+  it("first-run EEXIST recovery: readKey throws descriptively on corrupt wallet, never falls through to a losing key", () => {
     const env = tmpEnv();
     try {
-      // Force the wx-write EEXIST branch: a file exists whose privateKey is unreadable, so the
-      // initial readKey() returns null (proceed to write), the wx write throws EEXIST, and the
-      // recovery re-read ALSO returns null — which must rethrow, NOT silently return the local
-      // losing keypair. This pins the catch(EEXIST) → throw-e sub-path (previously untested).
+      // A file exists with an invalid privateKey — readKey now throws descriptively
+      // instead of returning null, so getOrCreateStoredWallet propagates that error.
       writeFileSync(walletPath(env), JSON.stringify({ privateKey: "not-a-valid-key" }));
-      let err: NodeJS.ErrnoException | undefined;
+      let err: Error | undefined;
       try {
         getOrCreateStoredWallet(env);
       } catch (e) {
-        err = e as NodeJS.ErrnoException;
+        err = e as Error;
       }
-      expect(err?.code).toBe("EEXIST"); // rethrown, not swallowed into a losing key
+      expect(err?.message).toMatch(/no valid privateKey/); // descriptive, not EEXIST
     } finally {
       clean(env);
     }
