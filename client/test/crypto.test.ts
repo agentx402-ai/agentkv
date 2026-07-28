@@ -10,6 +10,7 @@ import {
   hashKey,
   normalizeEncryptionKey,
 } from "../src/crypto";
+import { AgentKVError } from "../src/types";
 
 const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 
@@ -97,5 +98,22 @@ describe("hashKey — blind index digest", () => {
     expect(hashKey(mac, "Key")).not.toBe(hashKey(mac, "key"));
     const otherMac = deriveKeyMaterial(new Uint8Array(32).fill(1)).mac;
     expect(hashKey(otherMac, "x")).not.toBe(hashKey(mac, "x"));
+  });
+});
+
+describe("decrypt error taxonomy", () => {
+  it("all decrypt failures are AgentKVError with code decrypt_failed", async () => {
+    const good = await encrypt(KEY, "x");
+    const wrongKey = new Uint8Array(32).fill(9);
+    const cases: Array<[string, Uint8Array]> = [
+      ["!!!not base64!!!", KEY], // atob failure — today a cryptic DOMException "Invalid character"
+      [bytesToB64(new Uint8Array([1, 2, 3])), KEY], // no magic / truncated envelope
+      [good, wrongKey], // auth-tag failure
+    ];
+    for (const [packed, key] of cases) {
+      const err = await decrypt(key, packed).catch((e) => e);
+      expect(err).toBeInstanceOf(AgentKVError);
+      expect((err as AgentKVError).code).toBe("decrypt_failed");
+    }
   });
 });

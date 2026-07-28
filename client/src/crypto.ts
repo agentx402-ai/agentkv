@@ -3,6 +3,7 @@ import { hkdf } from "@noble/hashes/hkdf";
 import { hmac } from "@noble/hashes/hmac";
 import { sha256 } from "@noble/hashes/sha2";
 import { hexToBytes } from "viem";
+import { AgentKVError } from "./types";
 
 const KEY_LENGTH = 32;
 const IV_LENGTH = 12;
@@ -150,7 +151,18 @@ export async function encrypt(key: Uint8Array, plaintext: string, aad?: string):
  * digest — so a value the server serves for the WRONG key fails the tag instead of decrypting).
  */
 export async function decrypt(key: Uint8Array, packed: string, aad?: string): Promise<string> {
-  const bytes = fromBase64(packed);
+  let bytes: Uint8Array;
+  try {
+    bytes = fromBase64(packed);
+  } catch {
+    // atob's raw DOMException ("Invalid character") is uncatchable-by-taxonomy for
+    // consumers branching on instanceof AgentKVError.
+    throw new AgentKVError(
+      "decryption failed: stored value is not valid base64 — the blob is corrupted",
+      "decrypt_failed",
+      0,
+    );
+  }
   const known =
     bytes.length >= HEADER_LEN + IV_LENGTH + TAG_LENGTH &&
     bytes[0] === MAGIC0 &&
@@ -159,9 +171,11 @@ export async function decrypt(key: Uint8Array, packed: string, aad?: string): Pr
     bytes[3] === SUITE_AES256GCM &&
     bytes[4] === KDF_V1;
   if (!known) {
-    throw new Error(
+    throw new AgentKVError(
       `decryption failed: not a recognized AgentKV envelope (ver=${bytes[2]}, suite=${bytes[3]}, ` +
         `kdf=${bytes[4]}) — upgrade @agentkv/client, or the encryption key is wrong / the blob is corrupted`,
+      "decrypt_failed",
+      0,
     );
   }
   try {
@@ -172,8 +186,10 @@ export async function decrypt(key: Uint8Array, packed: string, aad?: string): Pr
       aadBytes(aad),
     );
   } catch {
-    throw new Error(
+    throw new AgentKVError(
       "decryption failed: wrong encryption key, corrupted blob, or a value served for a different key",
+      "decrypt_failed",
+      0,
     );
   }
 }
