@@ -10,6 +10,7 @@ import { runKv, runListKeys } from "./commands/kv";
 import { runWallet } from "./commands/wallet";
 import { clientFromConfig, readConfigFile, resolveConfig } from "./config";
 import { agentkvDir } from "./keystore";
+import { getOnrampProvider } from "./onramp";
 import { EXIT, printError, printJson, type Writer } from "./output";
 import { VERSION } from "./version.js";
 
@@ -154,6 +155,12 @@ function runConfig(
   if (flags.endpoint) merged.endpoint = flags.endpoint;
   if (flags.network) merged.network = flags.network;
   if (flags.maxSpendUsd !== undefined) merged.maxSpendUsd = flags.maxSpendUsd;
+  if (flags.onrampProvider !== undefined) {
+    // Fail at config time, not at first `fund`: getOnrampProvider throws listing known ids.
+    getOnrampProvider(flags.onrampProvider);
+    merged.onrampProvider = flags.onrampProvider;
+  }
+  if (flags.onrampAppId !== undefined) merged.onrampAppId = flags.onrampAppId;
   const path = join(dir, "config.json");
   writeFileSync(path, JSON.stringify(merged, null, 2));
   printJson(io.stdout, { ok: true, path, ...merged });

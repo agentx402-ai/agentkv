@@ -1,5 +1,9 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
+import { resolveConfig } from "../src/config";
 
 function fakeClient() {
   return {
@@ -70,5 +74,47 @@ describe("runCli", () => {
 
     const allOutput = [...out, ...err].join("");
     expect(allOutput).not.toContain(SENTINEL);
+  });
+
+  it("config persists --onramp-app-id and --onramp-provider (previously accepted then dropped)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      const out: string[] = [];
+      const code = await runCli(
+        ["config", "--onramp-app-id", "proj-1", "--onramp-provider", "coinbase"],
+        {
+          client: fakeClient() as any,
+          env: { AGENTKV_HOME: home } as any,
+          stdout: (s) => out.push(s),
+          stderr: () => {},
+        },
+      );
+      expect(code).toBe(0);
+      const file = JSON.parse(readFileSync(join(home, "config.json"), "utf8"));
+      expect(file).toMatchObject({ onrampAppId: "proj-1", onrampProvider: "coinbase" });
+      // the documented flag>env>FILE precedence is now actually reachable via the CLI:
+      const cfg = resolveConfig({}, {}, () => file);
+      expect(cfg.onrampConfig?.appId).toBe("proj-1");
+      expect(cfg.onrampProvider).toBe("coinbase");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("config rejects an unknown --onramp-provider instead of persisting it", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      const err: string[] = [];
+      const code = await runCli(["config", "--onramp-provider", "bogus"], {
+        client: fakeClient() as any,
+        env: { AGENTKV_HOME: home } as any,
+        stdout: () => {},
+        stderr: (s) => err.push(s),
+      });
+      expect(code).not.toBe(0);
+      expect(err.join("")).toMatch(/known providers/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
