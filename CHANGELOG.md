@@ -4,6 +4,14 @@ All notable changes to AgentKV are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-07-29
+
+### Changed
+
+- Dependency floors raised to match what installs already resolve: `@agentx402-ai/core`
+  `^0.1.1` (metadata-only release: corrected npm repository link) and `viem` `^2.55.10`.
+  No runtime behavior change in this package.
+
 ## [0.2.1] — 2026-07-10
 
 ### Changed

@@ -10,6 +10,8 @@ shared `@agentx402-ai/core` is released separately from [its own repo](https://g
 - `client/src/index.ts` (`VERSION`) — reported by the SDK
 - `cli/src/version.ts` (`VERSION`) — `agentkv --version` and the MCP server handshake
 - `plugin/agentkv/.claude-plugin/plugin.json` (`version`)
+- `client/test/scaffold.test.ts` — pins the exported `VERSION` literal (the suite fails
+  on a bump until it moves too; discovered the release after this list was written)
 - `agentx402-ai/claude-plugins` → `.claude-plugin/marketplace.json` (the `agentkv` plugin's
   `source.ref`) — the cross-repo pin the shared marketplace serves; synced on release (step 7).
 
