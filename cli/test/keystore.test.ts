@@ -30,6 +30,10 @@ describe("keystore", () => {
       );
       expect(() => peekStoredWallet(env)).toThrow(/not valid JSON/);
 
+      writeFileSync(walletPath(env), "null", { mode: 0o600 });
+      expect(() => getOrCreateStoredWallet(env)).toThrow(/no valid privateKey/);
+      expect(() => peekStoredWallet(env)).toThrow(/no valid privateKey/);
+
       writeFileSync(walletPath(env), JSON.stringify({ address: "0xabc" }), { mode: 0o600 });
       expect(() => getOrCreateStoredWallet(env)).toThrow(/no valid privateKey/);
     } finally {
@@ -87,11 +91,12 @@ describe("keystore", () => {
     }
   });
 
-  it("first-run EEXIST recovery: readKey throws descriptively on corrupt wallet, never falls through to a losing key", () => {
+  it("corrupt wallet.json fails loud before any mint attempt (formerly reached the EEXIST branch)", () => {
     const env = tmpEnv();
     try {
       // A file exists with an invalid privateKey — readKey now throws descriptively
-      // instead of returning null, so getOrCreateStoredWallet propagates that error.
+      // instead of returning null, so getOrCreateStoredWallet propagates that error
+      // at the initial check, before attempting to mint.
       writeFileSync(walletPath(env), JSON.stringify({ privateKey: "not-a-valid-key" }));
       let err: Error | undefined;
       try {
@@ -99,7 +104,7 @@ describe("keystore", () => {
       } catch (e) {
         err = e as Error;
       }
-      expect(err?.message).toMatch(/no valid privateKey/); // descriptive, not EEXIST
+      expect(err?.message).toMatch(/no valid privateKey/);
     } finally {
       clean(env);
     }

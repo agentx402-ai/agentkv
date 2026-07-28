@@ -83,7 +83,7 @@ function readKey(file: string): `0x${string}` | null {
         "inspect (do not blindly delete) or move it aside, then retry",
     );
   }
-  if (typeof parsed.privateKey === "string" && KEY_RE.test(parsed.privateKey)) {
+  if (typeof parsed?.privateKey === "string" && KEY_RE.test(parsed.privateKey)) {
     return parsed.privateKey as `0x${string}`;
   }
   throw new Error(
@@ -92,7 +92,7 @@ function readKey(file: string): `0x${string}` | null {
   );
 }
 
-/** The stored wallet's public address + path, or null if none exists. Never creates one. */
+/** The stored wallet's public address + path, or null if none exists; throws if exists but invalid. Never creates one. */
 export function peekStoredWallet(
   env: NodeJS.ProcessEnv = process.env,
 ): { address: `0x${string}`; path: string } | null {
