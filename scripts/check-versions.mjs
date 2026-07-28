@@ -14,6 +14,8 @@ const v = {
   clientConst: konst("client/src/index.ts"),
   cliConst: konst("cli/src/version.ts"),
   plugin: ver("plugin/agentkv/.claude-plugin/plugin.json"),
+  // The plugin runtime pin: without it the five-source lockstep never bound what runs.
+  mcpPin: (read("plugin/agentkv/.mcp.json").match(/"@agentkv\/cli@([^"]+)"/) || [])[1],
 };
 const uniq = [...new Set(Object.values(v))];
 if (uniq.length !== 1 || uniq[0] === undefined) {

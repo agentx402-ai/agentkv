@@ -10,6 +10,7 @@ shared `@agentx402-ai/core` is released separately from [its own repo](https://g
 - `client/src/index.ts` (`VERSION`) — reported by the SDK
 - `cli/src/version.ts` (`VERSION`) — `agentkv --version` and the MCP server handshake
 - `plugin/agentkv/.claude-plugin/plugin.json` (`version`)
+- `plugin/agentkv/.mcp.json` — the MCP runtime pin (`@agentkv/cli@<version>` in args)
 - `client/test/scaffold.test.ts` — pins the exported `VERSION` literal (the suite fails
   on a bump until it moves too; discovered the release after this list was written)
 - `agentx402-ai/claude-plugins` → `.claude-plugin/marketplace.json` (the `agentkv` plugin's
@@ -30,7 +31,7 @@ release it first from its own repo and bump the `^` range in `client`/`cli`.
 
 ## Steps
 
-1. Bump every version source above to the new version.
+1. Bump every version source above to the new version (including the `@agentkv/cli@<version>` pin in `.mcp.json`).
 2. Update `CHANGELOG.md` — add a dated `## [<version>]` section for the release.
 3. `npm ci && npm run lint && npm run build && npm test` — all green.
 4. `npm pack --dry-run --workspaces` — confirm each tarball's contents.
