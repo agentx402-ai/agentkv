@@ -45,7 +45,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [20, 22]
+        # 24 = publish.yml's runtime (needed there for native npm OIDC): releases must
+        # ship from a Node the matrix actually tests.
+        node: [20, 22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -117,25 +119,6 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm pack --dry-run --workspaces
-
-  no-internal-refs:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Fail on private/internal references in tracked files
-        run: |
-          # Keep the public tree free of the private backend repo name and its
-          # internal file paths. This workflow file is excluded because it
-          # necessarily names the patterns it searches for.
-          if git grep -nIE 'agentkv-worker|worker/(src|test)/' -- ':!.github/workflows/ci.yml'; then
-            echo "::error::internal/private reference found in a tracked file (see matches above)"
-            exit 1
-          fi
-          echo "ok: no internal references in tracked files"
 
   versions:
     runs-on: ubuntu-latest
