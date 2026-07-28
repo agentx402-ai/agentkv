@@ -26,7 +26,7 @@ export const DIGEST_SCHEME_V1 = 0x01;
 const HEADER = Uint8Array.of(MAGIC0, MAGIC1, ENVELOPE_VER, SUITE_AES256GCM, KDF_V1);
 const HEADER_LEN = HEADER.length; // 5
 
-/** Validate/normalize a supplied 32-byte encryption key (used directly as the AES key). */
+/** Validate/normalize a supplied 32-byte encryption key (the HKDF ikm the AES keys derive from). */
 export function normalizeEncryptionKey(key: Uint8Array | `0x${string}`): Uint8Array {
   const bytes = typeof key === "string" ? hexToBytes(key) : key;
   if (bytes.length !== KEY_LENGTH) {

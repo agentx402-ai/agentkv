@@ -6,6 +6,42 @@ All notable changes to AgentKV are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`@agentkv/client`**: constructor options are now validated fail-fast (`invalid_config`) —
+  a missing or malformed `endpoint` (must be an absolute `http`/`https` URL), a non-finite
+  `retries`, conflicting auth shapes (e.g. `accountKey` alongside a wallet, or `privateKey`
+  alongside an explicit `encryptionKey`), and malformed hook/option values (`topoffPayer`,
+  `opInlinePayer`, `bootstrap`, `prepay.watermark`, …) now throw at construction instead of
+  failing later with a confusing runtime error. `set()`'s `ttlDays` and `listKeys()`'s `limit`
+  are validated the same way (`invalid_value`).
+- **`@agentkv/client`**: a tampered or corrupted stored value now throws a distinguishing
+  `decrypt_failed` `AgentKVError` instead of an opaque low-level crypto exception.
+- **`@agentkv/cli`**: `agentkv deposit` (and the MCP `agentkv_deposit` tool) now accepts
+  fractional USD amounts that resolve to a whole number of atomic USDC units (e.g. `$33.30`),
+  reusing the client's exported `toWholeAtomicUsd`. A `--limit` flag that isn't a positive
+  integer now fails closed instead of forwarding `NaN`/`0` to the wire.
+- **`@agentkv/cli`**: `agentkv config` now persists `--onramp-provider` / `--onramp-app-id`,
+  matching the endpoint/network/spend-cap flags it already saved.
+
+### Changed
+
+- **`@agentkv/client`**: `listKeys()` now normalizes an empty-string cursor from the server to
+  `null`, so a `while (cursor !== null)` pagination loop terminates instead of looping forever.
+- **`@agentkv/cli`**: a corrupt `wallet.json` now fails with a descriptive error naming the
+  file path instead of a misleading "no wallet yet".
+- **`@agentkv/cli`**: `agentkv fund` now refuses onramp amounts above $1,000,000,000 instead of
+  building a URL with an implausible amount.
+- Claude plugin: `plugin/agentkv/.mcp.json` now pins the MCP server to `@agentkv/cli@0.2.2`
+  instead of spawning whatever is currently `@latest`; `AGENTKV_ENDPOINT` also gained the
+  empty-value `:-` fallback its sibling vars already had, so a blank endpoint config can't
+  leave an unexpanded placeholder overriding the hosted default.
+- CI's always-on `no-internal-refs` check now runs as its own workflow instead of living
+  inside `ci.yml`'s docs-`paths-ignore`'d job (docs-only pushes are exactly where an internal
+  reference is most likely to land), and the build/test matrix gained Node 24 (`publish.yml`'s
+  runtime). The version-lockstep check moved into `scripts/check-versions.mjs`, which also
+  covers a sixth source — the plugin's pinned MCP runtime — on every pull request.
+
 ### Security
 
 - **The release pipeline no longer runs third-party code in the job that can publish.**
@@ -28,13 +64,15 @@ All notable changes to AgentKV are documented here. The format follows
   resolve it through their own tree regardless. No runtime behavior change in either
   published package.
 
-## [0.2.2] - 2026-07-29
+## [0.2.2] — 2026-07-28
 
 ### Changed
 
 - Dependency floors raised to match what installs already resolve: `@agentx402-ai/core`
   `^0.1.1` (metadata-only release: corrected npm repository link) and `viem` `^2.55.10`.
   No runtime behavior change in this package.
+
+[0.2.2]: https://github.com/agentx402-ai/agentkv/releases/tag/v0.2.2
 
 ## [0.2.1] — 2026-07-10
 

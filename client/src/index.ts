@@ -123,11 +123,6 @@ export class AgentKV {
    * wallet that can sign) — the `ak_…` bearer token is the identity instead.
    */
   readonly signer?: Signer;
-  /**
-   * The wallet address, the per-wallet namespace. In account-key mode there is no
-   * wallet, so this is the zero address (a documented sentinel: the account key —
-   * not an address — is the identity; the server names storage by the key's hash).
-   */
   /** The wallet address (its namespace) in wallet/signer mode; `undefined` in account-key mode. */
   readonly address: `0x${string}` | undefined;
   /** The raw `ak_…` bearer token in account-key mode; `undefined` otherwise. */

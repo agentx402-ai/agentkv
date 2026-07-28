@@ -69,8 +69,9 @@ service must change in lockstep.
 `RELEASING.md` is authoritative. Six version sources move in lockstep:
 both `package.json`s, `client/src/index.ts` `VERSION`, `cli/src/version.ts` `VERSION`,
 `plugin/agentkv/.claude-plugin/plugin.json`, and `plugin/agentkv/.mcp.json`'s runtime pin —
-plus the marketplace pin synced on release. CI's `versions` job only cross-checks the two `package.json`s; update the
-rest by hand. Publishing happens via a GitHub Release → the `publish.yml` OIDC
+plus the marketplace pin synced on release. CI's `versions` job (`scripts/check-versions.mjs`)
+cross-checks all six sources plus the cli→client dependency range; `publish.yml` re-runs it
+against the release tag. Publishing happens via a GitHub Release → the `publish.yml` OIDC
 trusted-publishing workflow (client before cli — dependency order). Never
 `npm publish` from a laptop.
 

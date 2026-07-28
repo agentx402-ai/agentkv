@@ -7,9 +7,8 @@ operations (`agentkv_set`/`get`/`delete`/`list_keys`/`deposit`/`balance`/`wallet
 (`set_from_env` / `set_from_file` / `get_to_file` / `run_with_secret`) that store and use
 credentials without the value entering the model context.
 
-> **Prerequisite:** the plugin runs `npx -y @agentkv/cli mcp`, so [`@agentkv/cli`](../cli) must be
-> published to npm (or resolvable via `npx`). It is **not yet published** — until then, use the
-> local-checkout method in step 1.
+> **Prerequisite:** the plugin runs `npx -y @agentkv/cli mcp`. Both packages are published to npm —
+> `npx -y @agentkv/cli` resolves the released CLI.
 >
 > **Windows:** `.mcp.json` uses `"command": "npx"`. Claude Code's MCP launcher resolves the
 > `npx.cmd` shim on Windows automatically, so this works as-is. Other MCP clients that spawn the

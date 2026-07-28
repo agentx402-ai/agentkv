@@ -39,8 +39,9 @@ export AGENTKV_ACCOUNT_KEY=ak_...  AGENTKV_ENCRYPTION_KEY=0x...
 agentkv set mykey '{"hello":"world"}'
 ```
 
-Account-key mode is selected when an `account.json` exists (from `account new`) or
-`AGENTKV_ACCOUNT_KEY` is set; an explicit `AGENTKV_PRIVATE_KEY` keeps wallet mode.
+Account-key mode is selected when `AGENTKV_ACCOUNT_KEY` is set (it wins over everything,
+including an explicit `AGENTKV_PRIVATE_KEY`), or when an `account.json` exists and no
+`AGENTKV_PRIVATE_KEY` is set — an explicit wallet key beats the stored file, not the env key.
 
 Prefer not to fund it by hand every time? Set `AGENTKV_TOPOFF=awal` and the CLI tops itself
 off automatically instead — see `AGENTKV_TOPOFF` in Configuration below.

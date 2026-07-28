@@ -154,8 +154,10 @@ describe("MCP account-key mode awareness", () => {
 
   it("account mode: fund refuses BEFORE onramp config is consulted (even with onramp omitted)", async () => {
     // accountMode guard must precede the onramp-unavailable check — no burn URL regardless.
-    const tools = (buildMcpServer(fakeClient({ address: ZERO }) as any, undefined, true) as any)
-      ._registeredTools;
+    // address: undefined matches the real client's account-key-mode contract (no wallet).
+    const tools = (
+      buildMcpServer(fakeClient({ address: undefined }) as any, undefined, true) as any
+    )._registeredTools;
     const res = await tools.agentkv_fund.handler({}, {});
     expect(res.isError).toBe(true);
     expect(JSON.parse(res.content[0].text).code).toBe("account_mode");
@@ -167,7 +169,8 @@ describe("MCP account-key mode awareness", () => {
     const deposit = vi.fn(async () => {
       throw new Error("no_signer");
     });
-    const tools = toolsFor(fakeClient({ address: ZERO, deposit }), true);
+    // address: undefined matches the real client's account-key-mode contract (no wallet).
+    const tools = toolsFor(fakeClient({ address: undefined, deposit }), true);
     const res = await tools.agentkv_deposit.handler({ amount_usd: 5 }, {});
     expect(res.isError).toBe(true);
     const body = JSON.parse(res.content[0].text);

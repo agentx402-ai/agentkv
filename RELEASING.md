@@ -16,7 +16,8 @@ shared `@agentx402-ai/core` is released separately from [its own repo](https://g
 - `agentx402-ai/claude-plugins` → `.claude-plugin/marketplace.json` (the `agentkv` plugin's
   `source.ref`) — the cross-repo pin the shared marketplace serves; synced on release (step 7).
 
-CI fails if the two publishable `package.json` versions diverge (the `versions` job).
+CI's `versions` job (`scripts/check-versions.mjs`) cross-checks all six sources plus the
+cli→client dependency range; `publish.yml` re-runs it against the release tag.
 
 ## Publish order (required)
 

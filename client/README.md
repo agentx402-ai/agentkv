@@ -23,6 +23,12 @@ await kv.delete("session:plan");
 const credits = await kv.balance();
 ```
 
+> **Encryption-key stability:** `{ privateKey: k }` and `{ signer: accountFrom(k) }` derive
+> **different** encryption keys for the same wallet (raw key bytes vs a signature over a fixed
+> message). Switching shapes makes previously written data unreadable and unlisted — reads
+> return `null`, no error. To migrate between shapes (or use a KMS/hardware signer), pin an
+> explicit `encryptionKey`.
+
 ### Account-key mode (managed wallets that can't sign)
 
 Pass an `ak_…` bearer token plus a **local** encryption key instead of a wallet. The bearer owns
@@ -39,8 +45,10 @@ const kv = new AgentKV({
 await kv.set("session:plan", plan); // bearer-authenticated; debits prepaid credits
 ```
 
-In account-key mode `deposit()` throws (there is no wallet to sign an x402 payment) — fund the
-account instead by depositing to `<endpoint>/account/deposit` from any signing wallet, e.g. with
+In account-key mode `deposit()` uses the configured `topoffPayer` when one is set (the hook
+is asked to buy that many credits, then the new balance is reported). With no `topoffPayer`
+it throws — fund the account by depositing to `<endpoint>/account/deposit` from any signing
+wallet, e.g. with
 [awal](https://www.npmjs.com/package/awal).
 
 ### `topoffPayer` — account-key auto top-off
