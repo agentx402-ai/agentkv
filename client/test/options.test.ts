@@ -37,3 +37,49 @@ describe("constructor option validation", () => {
     expect(new AgentKV({ endpoint: EP, privateKey: PK, retries: -1 }).maxRetries).toBe(0);
   });
 });
+
+describe("conflicting auth material", () => {
+  const AK = `ak_${"ab".repeat(32)}`;
+  const ENC = `0x${"11".repeat(32)}` as const;
+
+  it("rejects accountKey + privateKey instead of silently dropping the wallet", () => {
+    expect(
+      () =>
+        new AgentKV({ endpoint: EP, accountKey: AK, encryptionKey: ENC, privateKey: PK } as any),
+    ).toThrow(/mutually exclusive|exactly one/i);
+  });
+
+  it("rejects accountKey + signer", () => {
+    const signer = {
+      address: "0x0000000000000000000000000000000000000001",
+      signTypedData: async () => "0x",
+    } as any;
+    expect(
+      () => new AgentKV({ endpoint: EP, accountKey: AK, encryptionKey: ENC, signer } as any),
+    ).toThrow(/mutually exclusive|exactly one/i);
+  });
+
+  it("still accepts accountKey with an explicitly-undefined privateKey (spread configs)", () => {
+    const kv = new AgentKV({
+      endpoint: EP,
+      accountKey: AK,
+      encryptionKey: ENC,
+      privateKey: undefined,
+    } as any);
+    expect(kv.accountKey).toBe(AK);
+  });
+
+  it("regression: privateKey + encryptionKey stays rejected (the sibling silent-ignore guard)", () => {
+    const err = (() => {
+      try {
+        new AgentKV({ endpoint: EP, privateKey: PK, encryptionKey: ENC } as any);
+        return null;
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(AgentKVError);
+    expect((err as AgentKVError).code).toBe("invalid_config");
+    expect((err as AgentKVError).message).toMatch(/signer, encryptionKey/);
+  });
+});

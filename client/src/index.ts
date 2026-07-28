@@ -318,6 +318,21 @@ export class AgentKV {
     // mode, not account mode. `"accountKey" in opts` would be true for a present-but-
     // undefined key and wrongly enter account mode (throwing invalid_config).
     if (isAccountMode) {
+      // Value-based, like the accountKey/privateKey discrimination above: a present-but-
+      // undefined key from a spread config must not trip this. A REAL wallet alongside an
+      // accountKey would be silently dropped (bearer auth on a different namespace than the
+      // caller thinks) — reject, symmetric with the privateKey+encryptionKey guard below.
+      const hasWallet =
+        ("privateKey" in opts && (opts as { privateKey?: unknown }).privateKey != null) ||
+        ("signer" in opts && (opts as { signer?: unknown }).signer != null);
+      if (hasWallet) {
+        throw new AgentKVError(
+          "accountKey and a wallet (privateKey/signer) are mutually exclusive — account-key mode " +
+            "has no signing wallet; pass exactly one auth shape",
+          "invalid_config",
+          0,
+        );
+      }
       // Account-key mode: no signing wallet. The `ak_…` bearer token is the
       // identity. There is no wallet to derive an AES key from, so an explicit
       // `encryptionKey` is REQUIRED and used directly to derive the key material
