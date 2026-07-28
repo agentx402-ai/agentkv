@@ -1043,6 +1043,11 @@ export class AgentKV {
         value: ciphertext,
         key_name: await encrypt(km.keyName, key),
       };
+      // Mirror the CLI's --ttl-days rule (finite, >= 0): a NaN here serializes as
+      // ttl_days:null on a PAID write, silently dropping the caller's retention choice.
+      if (opts.ttlDays !== undefined && (!Number.isFinite(opts.ttlDays) || opts.ttlDays < 0)) {
+        throw new AgentKVError("ttlDays must be a finite number >= 0", "invalid_value", 0);
+      }
       // camelCase API option -> snake_case wire field.
       if (opts.ttlDays !== undefined) body.ttl_days = opts.ttlDays;
       if (opts.strictTtl !== undefined) body.strict_ttl = opts.strictTtl;

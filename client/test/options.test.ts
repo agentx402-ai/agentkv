@@ -83,3 +83,21 @@ describe("conflicting auth material", () => {
     expect((err as AgentKVError).message).toMatch(/signer, encryptionKey/);
   });
 });
+
+describe("set() input validation", () => {
+  it.each([Number.NaN, -1, Number.POSITIVE_INFINITY])(
+    "rejects ttlDays=%s before any network call",
+    async (ttlDays) => {
+      const kv = new AgentKV({
+        endpoint: EP,
+        privateKey: PK,
+        fetch: (() => {
+          throw new Error("network must not be hit");
+        }) as any,
+      });
+      await expect(kv.set("k", "v", { ttlDays })).rejects.toMatchObject({
+        code: "invalid_value",
+      });
+    },
+  );
+});
