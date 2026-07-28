@@ -182,10 +182,34 @@ export class AgentKV {
   private challengeTemplate?: string;
 
   constructor(opts: AgentKVOptions) {
+    // Fail fast (invalid_config) at construction: an absent endpoint otherwise dies with a
+    // bare TypeError on .replace, and a non-URL string only surfaces as "Invalid URL" from
+    // the first (possibly paying) op. Same pattern as the expectedPayTo pin below.
+    if (typeof opts.endpoint !== "string" || opts.endpoint === "") {
+      throw new AgentKVError("endpoint is required (an absolute http(s) URL)", "invalid_config", 0);
+    }
+    try {
+      const u = new URL(opts.endpoint);
+      if (u.protocol !== "http:" && u.protocol !== "https:") {
+        throw new Error("unsupported protocol");
+      }
+    } catch {
+      throw new AgentKVError(
+        `endpoint must be an absolute http(s) URL (got ${JSON.stringify(opts.endpoint)})`,
+        "invalid_config",
+        0,
+      );
+    }
     this.endpoint = opts.endpoint.replace(/\/+$/, "");
     this.network = opts.network ?? DEFAULT_NETWORK;
     this.maxSpendUsd = opts.maxSpendUsd;
     this.maxSessionSpendUsd = opts.maxSessionSpendUsd;
+    // retries: NaN would make the retry condition always-false (silently no retries) and
+    // Infinity would survive the clamp (unbounded loop) — reject non-finite; negatives
+    // still clamp to 0 as before.
+    if (opts.retries !== undefined && !Number.isFinite(opts.retries)) {
+      throw new AgentKVError("retries must be a finite number >= 0", "invalid_config", 0);
+    }
     this.maxRetries = Math.max(0, Math.floor(opts.retries ?? 2));
     this.timeoutMs = opts.timeoutMs;
     this.fetchImpl = opts.fetch;
