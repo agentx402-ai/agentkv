@@ -1180,6 +1180,11 @@ export class AgentKV {
   async listKeys(
     opts: { cursor?: string | null; limit?: number } = {},
   ): Promise<{ keys: string[]; cursor: string | null }> {
+    // limit reaches the wire verbatim — reject garbage (NaN/0/fractions) up front,
+    // mirroring the CLI's --limit rule.
+    if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1)) {
+      throw new AgentKVError("limit must be a positive integer", "invalid_value", 0);
+    }
     const km = await this.getKeyMaterial();
     // EIP-712 binds the pathname only (query excluded); the v1 canonical list path is
     // `/v1/kv` (NOT `/v1/list-keys`), so the versioned pathname is given explicitly.
@@ -1220,7 +1225,9 @@ export class AgentKV {
           }),
       )
     ).filter((k): k is string => k !== null);
-    return { keys, cursor: data.cursor };
+    // An empty-string cursor from the server is "exhausted", not a resumable page token —
+    // surface the documented null so `while (cursor !== null)` drivers terminate.
+    return { keys, cursor: data.cursor || null };
   }
 
   /**

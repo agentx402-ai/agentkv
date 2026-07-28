@@ -625,6 +625,28 @@ describe("AgentKV set/get/delete (mocked fetch)", () => {
     expect(res.keys).toEqual(["secret:good"]); // the healthy name survives; the bad row is skipped
   });
 
+  it("listKeys normalizes an empty-string server cursor to null (pagination termination)", async () => {
+    // A `while (cursor !== null)` driver would otherwise re-fetch page 1 forever.
+    mockFetch(
+      () =>
+        new Response(JSON.stringify({ items: [], cursor: "" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const res = await kv.listKeys();
+    expect(res.cursor).toBeNull();
+  });
+
+  it("listKeys rejects a non-positive-integer limit before any network call", async () => {
+    for (const limit of [Number.NaN, 0, -1, 2.5]) {
+      mockFetch(() => {
+        throw new Error("fetch should not be called");
+      });
+      await expect(kv.listKeys({ limit })).rejects.toMatchObject({ code: "invalid_value" });
+    }
+  });
+
   it("rejects a 402 challenge on a DIFFERENT network than the client is configured for", async () => {
     // A Base-mainnet (default) client must not sign a payment for a challenge that names a
     // different chain — the server does not get to redirect money movement to another network.
