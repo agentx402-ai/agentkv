@@ -42,8 +42,10 @@ docs/
 npm-debug.log*
 
 # Ad-hoc stress / verification / probe scripts — kept out of the published library
-# and CI (real tests live in core/, client/, and cli/). Scripts for CI (like check-versions.mjs)
-# are checked in; only ad-hoc probes are ignored.
+# and CI (real tests live in core/, client/, and cli/). The scripts/ directory is ignored
+# entirely, except for committed CI helpers like check-versions.mjs (negated below).
+/scripts/*
+!/scripts/check-versions.mjs
 /STRESS.md
 /stress.mjs
 /stress-mp.mjs
