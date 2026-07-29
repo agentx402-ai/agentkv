@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   forbiddenEnvKey,
+  isSensitiveEnvName,
   readEnvSecret,
   readFileSecret,
   runWithSecret,
+  scrubSensitiveEnv,
   writeSecretFile,
 } from "../src/secrets";
 
@@ -281,5 +283,58 @@ describe("forbiddenEnvKey", () => {
     expect(forbiddenEnvKey(["BAD KEY"])).toBe("BAD KEY"); // malformed: space
     expect(forbiddenEnvKey(["MY=KEY"])).toBe("MY=KEY"); // malformed: '='
     expect(forbiddenEnvKey(["API_KEY", "AWS_REGION", "OPENAI_API_KEY"])).toBeNull();
+  });
+});
+
+// Regression: isSensitiveEnvName / SENSITIVE_ENV / SENSITIVE_ENV_PATTERN / scrubSensitiveEnv
+// were pinned by nothing — neutering any one of them still left the cli suite green, re-opening
+// a path for an agent to read the funded payer key (or the wallet/encryption key) back out of
+// the environment via set_from_env. These pin the denylist, the defense-in-depth pattern, and
+// the scrub itself directly (mcp-lifecycle.test.ts pins the OTHER half: that startMcp actually
+// calls scrubSensitiveEnv at startup).
+describe("protected env key material", () => {
+  it.each([
+    "AGENTKV_PRIVATE_KEY",
+    "AGENTKV_ENCRYPTION_KEY",
+    "AGENTKV_ACCOUNT_KEY",
+    "AGENTKV_PAYER_KEY", // funded external payer — holds real USDC
+  ])("%s is protected by the explicit denylist", (name) => {
+    expect(isSensitiveEnvName(name)).toBe(true);
+  });
+
+  it.each([
+    "AGENTKV_SOMETHING_PRIVATE_KEY",
+    "AGENTKV_BACKUP_PAYER_KEY",
+    "AGENTKV_WALLET_MNEMONIC",
+    "AGENTKV_SEED_PHRASE",
+    "agentkv_wallet_private_key", // case-insensitive
+  ])("%s is protected by the name pattern (defense in depth)", (name) => {
+    expect(isSensitiveEnvName(name)).toBe(true);
+  });
+
+  it.each(["OPENAI_API_KEY", "STRIPE_SECRET", "HOME"])(
+    "%s is NOT protected — storing third-party secrets is the tool's purpose",
+    (name) => expect(isSensitiveEnvName(name)).toBe(false),
+  );
+
+  it("scrubSensitiveEnv deletes every protected var and leaves the rest intact", () => {
+    const env = {
+      AGENTKV_PRIVATE_KEY: "0xdead",
+      AGENTKV_PAYER_KEY: "0xbeef",
+      AGENTKV_WALLET_MNEMONIC: "twelve words",
+      AGENTKV_ENDPOINT: "https://x.test",
+      OPENAI_API_KEY: "sk-keepme",
+    } as NodeJS.ProcessEnv;
+    scrubSensitiveEnv(env);
+    expect(env.AGENTKV_PRIVATE_KEY).toBeUndefined();
+    expect(env.AGENTKV_PAYER_KEY).toBeUndefined();
+    expect(env.AGENTKV_WALLET_MNEMONIC).toBeUndefined();
+    expect(env.AGENTKV_ENDPOINT).toBe("https://x.test");
+    expect(env.OPENAI_API_KEY).toBe("sk-keepme");
+  });
+
+  it("readEnvSecret refuses a protected var (no reading the payer key back into a value)", () => {
+    const r = readEnvSecret("AGENTKV_PAYER_KEY");
+    expect(r.ok).toBe(false);
   });
 });

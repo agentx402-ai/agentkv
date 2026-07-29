@@ -12,7 +12,38 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { startMcp } from "../src/mcp";
+
+// Fakes the stdio TRANSPORT only (McpServer/Server stays real) so `startMcp` can be run
+// in-process for the env-scrub assertion in "MCP server startup" below, without a REAL
+// StdioServerTransport binding to THIS test process's actual stdin/stdout. The real class
+// attaches `process.stdin.on("data", …)` synchronously inside `start()` — see
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js — which would hijack the
+// shared vitest worker's stdio; every other test in this file avoids that by spawning a
+// separate OS process instead. vi.hoisted is required here because vi.mock's factory runs
+// before this file's own top-level statements (Vitest hoists vi.mock above all imports).
+const { FakeStdioServerTransport } = vi.hoisted(() => {
+  class FakeStdioServerTransport {
+    onclose?: () => void;
+    onerror?: (error: Error) => void;
+    onmessage?: (message: unknown, extra?: unknown) => void;
+    start(): Promise<void> {
+      return Promise.resolve();
+    }
+    close(): Promise<void> {
+      this.onclose?.();
+      return Promise.resolve();
+    }
+    send(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+  return { FakeStdioServerTransport };
+});
+vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
+  StdioServerTransport: FakeStdioServerTransport,
+}));
 
 const DUMMY_ENV = {
   ...process.env,
@@ -128,6 +159,59 @@ describe("MCP server lifecycle", () => {
       rmSync(home, { recursive: true, force: true });
     }
   }, 15_000);
+});
+
+// Regression: nothing pinned that `startMcp` actually SCRUBS its own env at startup —
+// neutering the `scrubSensitiveEnv(env)` call site in src/mcp.ts left the cli suite green,
+// re-opening a path for an agent to read the funded payer key (or the wallet/encryption key)
+// back out via set_from_env. secrets.test.ts pins scrubSensitiveEnv/isSensitiveEnvName/
+// SENSITIVE_ENV/SENSITIVE_ENV_PATTERN directly; this pins the OTHER half — that startMcp calls it.
+//
+// Why this can't be observed over the wire like the tests above (per the task brief's own
+// escape hatch): every tool that can read an env var re-checks isSensitiveEnvName
+// INDEPENDENTLY of the startup scrub — agentkv_set_from_env via readEnvSecret, and
+// agentkv_run_with_secret via runWithSecret's own inline strip loop (see cli/src/secrets.ts).
+// So a spawned server's tool responses are IDENTICAL whether or not scrubSensitiveEnv ran at
+// startup; there is no observable difference through the MCP wire protocol, spawned or not.
+// This instead asserts the scrub at the point startMcp constructs the server: the real,
+// unmodified startMcp runs in-process against an injected `env` object (the stdio transport
+// is faked per the vi.mock above; McpServer/Server itself is the real, unmocked SDK code).
+describe("MCP server startup: env scrub (server-construction level)", () => {
+  it("startMcp deletes protected key vars from its own env before serving, leaving the rest", () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-scrub-"));
+    const env = {
+      AGENTKV_HOME: home,
+      AGENTKV_ENDPOINT: "https://example.invalid",
+      AGENTKV_PRIVATE_KEY: "0xdead",
+      AGENTKV_PAYER_KEY: "0xbeef", // funded external payer — holds real USDC
+      AGENTKV_WALLET_MNEMONIC: "twelve words",
+      OPENAI_API_KEY: "sk-keepme", // third-party secret — storing these is the tool's purpose
+    } as NodeJS.ProcessEnv;
+    const client = {
+      set: () => Promise.resolve({ ok: true }),
+      get: () => Promise.resolve(null),
+      delete: () => Promise.resolve({ ok: true }),
+      deposit: () => Promise.resolve({}),
+      balance: () => Promise.resolve(0),
+      address: "0xabc",
+    };
+    try {
+      // scrubSensitiveEnv runs synchronously inside startMcp, before its first `await`
+      // (server.connect) — by the time this call returns control here, the mutation below
+      // has already happened. The returned promise is deliberately not awaited: the fake
+      // transport's onclose is never triggered so it never settles, but it holds no real OS
+      // handle (stdin/stdout are never touched by FakeStdioServerTransport), so nothing
+      // leaks or hangs — `.catch` just guards against an unhandled-rejection crash.
+      void startMcp({ env, client: client as any }).catch(() => {});
+      expect(env.AGENTKV_PRIVATE_KEY).toBeUndefined();
+      expect(env.AGENTKV_PAYER_KEY).toBeUndefined();
+      expect(env.AGENTKV_WALLET_MNEMONIC).toBeUndefined();
+      expect(env.AGENTKV_ENDPOINT).toBe("https://example.invalid");
+      expect(env.OPENAI_API_KEY).toBe("sk-keepme");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe.skipIf(process.platform === "win32")("CLI bin entry point", () => {
