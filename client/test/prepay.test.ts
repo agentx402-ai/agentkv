@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentKV } from "../src/index";
 import { nonceFromIdempotencyKey } from "../src/payment";
+import { SpendCapError } from "../src/types";
 
 const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 const endpoint = "https://api.agentx402.ai";
@@ -93,6 +94,12 @@ function paymentResponseHeader(txHash: string): string {
 // sessionSpentUsd is private with no getter — read it directly for spend-accounting asserts.
 function sessionSpent(kv: AgentKV): number {
   return (kv as unknown as { sessionSpentUsd: number }).sessionSpentUsd;
+}
+
+// sessionReservedUsd is private with no getter — read it directly to prove a top-off is
+// genuinely held (not inferred from timing) before racing a concurrent spend against it.
+function sessionReserved(kv: AgentKV): number {
+  return (kv as unknown as { sessionReservedUsd: number }).sessionReservedUsd;
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -347,6 +354,68 @@ describe("prepay: hard-402 fallback pays a top-off (d)", () => {
     const pays = paymentCalls(calls);
     expect(pays).toHaveLength(1);
     expect(pays[0].paymentValue).toBe("20000000"); // $20 top-off, NOT the $0.01 op price
+  });
+});
+
+describe("prepay: an in-flight top-off is reserved against the session cap (concurrency)", () => {
+  it("a wallet-mode top-off racing a deposit does not exceed the session cap", async () => {
+    // Regression: the hard-402 topoffHere branch used to leave `release` a no-op, so its
+    // $5 top-off was invisible to a concurrent deposit()'s session-cap check. $5 + $10 = $15
+    // against a $12 cap: at most one may land.
+    const calls: Captured[] = [];
+    let resolvePaidTopoff: ((res: Response) => void) | undefined;
+    const paidTopoffGate = new Promise<Response>((resolve) => {
+      resolvePaidTopoff = resolve;
+    });
+
+    mockFetch(calls, (cap) => {
+      if (!cap.headers.get("PAYMENT-SIGNATURE")) {
+        // Cold-start identity 402: no credits, forces the hard-402 topoff decision.
+        return new Response(
+          JSON.stringify({ error: "payment required", code: "payment_required" }),
+          {
+            status: 402,
+            headers: {
+              "PAYMENT-REQUIRED": challengeHeader(10000),
+              "X-AgentKV-Credits-Remaining": "0",
+            },
+          },
+        );
+      }
+      // The PAID retry is held open until the test explicitly releases it, so the $5
+      // reservation is PROVABLY still held (not inferred from timing) while deposit() runs.
+      return paidTopoffGate;
+    });
+
+    const kv = new AgentKV({
+      privateKey: PK,
+      endpoint,
+      maxSessionSpendUsd: 12,
+      prepay: { watermark: 10, topoff: 5 },
+    });
+
+    const setPromise = kv.set("session", "v");
+    // Wait until set()'s hard-402 branch has actually reserved the $5 top-off and is now
+    // blocked on the (gated) paid retry.
+    await vi.waitFor(() => {
+      if (sessionReserved(kv) !== 5) throw new Error("top-off not reserved yet");
+    });
+
+    // $5 (in-flight top-off) + $10 = $15 > $12 — must be capped, not silently allowed through.
+    await expect(kv.deposit(10)).rejects.toBeInstanceOf(SpendCapError);
+
+    // Release the top-off's paid retry so set() can complete normally.
+    resolvePaidTopoff?.(
+      new Response(JSON.stringify({ ok: true, expires_at: "x" }), {
+        status: 200,
+        headers: { "X-AgentKV-Credits-Remaining": "50000" },
+      }),
+    );
+    await setPromise;
+
+    const pays = paymentCalls(calls);
+    const totalPaidUsd = pays.reduce((sum, p) => sum + Number(p.paymentValue) / 1_000_000, 0);
+    expect(totalPaidUsd).toBe(5); // only the top-off settled; the deposit was correctly rejected
   });
 });
 

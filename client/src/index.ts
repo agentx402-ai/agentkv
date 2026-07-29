@@ -731,9 +731,17 @@ export class AgentKV {
       // Account-key mode: no signing wallet — dispatch the SAME payer hook the
       // synchronous paths use. A hook failure is swallowed (crash-safe, mirrors
       // the wallet-mode runDeposit catch below); the next op's 402 retries it.
+      // Reserve NOW, synchronously, before the detached dispatch: unlike runDeposit
+      // (wallet mode, below), runAccountTopoff() has no reservation of its own, so
+      // without this the single-flight flag only bounded the COUNT of detached
+      // top-offs to one — not the TOTAL, since the amount stayed invisible to
+      // sessionReservedUsd and a concurrent op could still push real spend past the
+      // cap. Released in the SAME `.finally()` that already clears `topoffInFlight`.
+      const releaseTopoff = this.reserveSession(this.prepay.topoff);
       void this.runAccountTopoff()
         .catch(() => {})
         .finally(() => {
+          releaseTopoff();
           this.topoffInFlight = false;
         });
       return;
@@ -742,6 +750,8 @@ export class AgentKV {
     // not a per-op charge) AND swallow any rejection (cap race, network, server)
     // so a failed background top-off never becomes an unhandled rejection that
     // crashes the host — the next op's 402 retries it. deposit() recordSpends itself.
+    // No separate reservation needed here: runDeposit() (site 5) already reserves and
+    // releases its own amount internally, synchronously, before this call even yields.
     void this.runDeposit(this.prepay.topoff, { bypassPerOpCap: true })
       .catch(() => {})
       .finally(() => {
@@ -874,11 +884,20 @@ export class AgentKV {
       // surfaces a real shortfall). Not setting toppedOff on a failed proactive deposit is
       // deliberate: it deposited nothing, so the hard-402 path may still try exactly one.
       if (flight.claimed && this.topoffPayer && this.topoffFitsSessionCap()) {
+        // Reserve the committed top-off so a concurrent op's session-cap check sees it —
+        // topoffFitsSessionCap() just confirmed it fits. Without this the single-flight flag
+        // only bounded the COUNT of proactive top-offs to one, not the TOTAL: the amount was
+        // invisible to sessionReservedUsd, so a concurrent deposit/op could still push the
+        // combined real spend past the cap. Released once runSharedTopoff() resolves —
+        // recordSpend has already run internally by then on success.
+        const releaseTopoff = this.reserveSession(this.prepay!.topoff);
         try {
           await this.runSharedTopoff();
           toppedOff = true;
         } catch {
           // swallowed by design (proactive path); the op continues on remaining credits.
+        } finally {
+          releaseTopoff();
         }
       }
       this.maybeAsyncTopoff();
@@ -919,13 +938,24 @@ export class AgentKV {
           await this.assertBootstrapAllowed(res);
           if (!flight.claimed) flight.claimed = this.tryClaimTopoffOnFault();
           if (flight.claimed && this.topoffFitsSessionCap()) {
-            await this.runSharedTopoff();
+            // Same reservation as the proactive attempt above: a committed top-off must be
+            // visible to a concurrent session-cap check, not just single-flight-bounded to a
+            // COUNT of one. The credit reservation above stays held throughout — unlike the
+            // inline branch below, the credit path is NOT abandoned here (a successful retry
+            // still debits creditCostUsd), so both amounts are genuinely in flight at once.
+            const releaseTopoff = this.reserveSession(this.prepay!.topoff);
+            try {
+              await this.runSharedTopoff();
+            } finally {
+              releaseTopoff();
+            }
             res = await sendBearer();
             this.trackBalance(res);
           } else if (this.topoffPromise) {
             // A concurrent op won the single-flight and is depositing RIGHT NOW: rather than
             // surface this 402 (a deposit is landing), await that sibling's top-off and retry
-            // the bearer ONCE — the same Idempotency-Key keeps it exactly-once.
+            // the bearer ONCE — the same Idempotency-Key keeps it exactly-once. That sibling
+            // took its own reservation; there is nothing to reserve here.
             await this.topoffPromise.catch(() => {});
             res = await sendBearer();
             this.trackBalance(res);
@@ -934,6 +964,13 @@ export class AgentKV {
         // Inline opt-in: route the WHOLE op through an external x402 transport (e.g. awal)
         // instead of a credit top-off. Mutually exclusive with topoffPayer PER OP.
         if (res.status === 402 && this.opInlinePayer && !this.topoffPayer) {
+          // Once inline is taken, the credit path is abandoned — its recordSpend(creditCostUsd)
+          // below is unreachable — so release the outer reservation NOW rather than holding it
+          // as dead weight alongside the inline reservation below. Pre-fix, that double-hold
+          // rejected a single, uncontended op whose session cap sat within a credit cost of the
+          // op ceiling. releaseCredit() is idempotent, so the outer `finally` above stays a
+          // harmless catch-all for every other exit path.
+          releaseCredit();
           await this.assertBootstrapAllowed(res);
           // Bound by the caller's per-op cap and pre-reserve against the session cap BEFORE
           // paying — the credit-cost pre-flight only checked the credit price, not real USDC.
@@ -974,39 +1011,53 @@ export class AgentKV {
     // 0) Wallet-mode proactive single-shot top-off (claim held): pay a >=$1 top-off on THIS op
     //    from the cached challenge template. Cold start (no template) -> identity path below.
     if (flight.claimed && this.challengeTemplate && this.topoffFitsSessionCap()) {
-      let paymentSignature: string | undefined;
+      // Reserve the committed top-off so a concurrent op's session-cap check sees it — this is
+      // the SAME commitment as the hard-402 topoffHere branch below (a top-off riding this op's
+      // request), just reached via the cached-template fast path instead of a cold-start 402.
+      // Released whenever this attempt settles OR falls through (stale template, non-2xx,
+      // signing failure): none of those actually spent anything, so nothing stays reserved.
+      const releaseTopoff = this.reserveSession(this.prepay!.topoff);
       try {
-        paymentSignature = await buildPaymentHeader(this.requireSigner(), this.challengeTemplate, {
-          amountAtomic: this.topoffAtomic,
-          expectedNetwork: this.network,
-          expectedPayTo: this.expectedPayTo,
-          // Pin the nonce to the op's idempotency key so a retry reuses the auth and the
-          // server dedupes the mint + the op.
-          nonce: nonceFromIdempotencyKey(idempotencyKey),
-        });
-      } catch {
-        // Corrupted/stale cached template or a network-pin failure: clear it and fall through
-        // to the identity path (the hard-402 fallback refreshes the template).
-        this.challengeTemplate = undefined;
-      }
-      if (paymentSignature !== undefined) {
-        const res = await this.fetchWithRetry(url, () =>
-          spec.buildRequest({
-            "Idempotency-Key": idempotencyKey,
-            "PAYMENT-SIGNATURE": paymentSignature as string,
-          }),
-        );
-        this.trackBalance(res);
-        if (res.status === 404 && spec.notFound) return spec.notFound();
-        // A 402 means the cached template was stale (trackBalance just refreshed it): fall
-        // through to the identity/credit path, self-healing on THIS call (same held claim).
-        if (res.status !== 402) {
-          if (!res.ok) throw await this.asError(res, label);
-          // Count the top-off ONLY if it actually settled on-chain (non-empty PAYMENT-RESPONSE
-          // txHash) — a credit-served op settles nothing; single-flight => at most once.
-          if (this.settledTxHash(res)) this.recordSpend(this.prepay!.topoff);
-          return spec.parseSuccess(res);
+        let paymentSignature: string | undefined;
+        try {
+          paymentSignature = await buildPaymentHeader(
+            this.requireSigner(),
+            this.challengeTemplate,
+            {
+              amountAtomic: this.topoffAtomic,
+              expectedNetwork: this.network,
+              expectedPayTo: this.expectedPayTo,
+              // Pin the nonce to the op's idempotency key so a retry reuses the auth and the
+              // server dedupes the mint + the op.
+              nonce: nonceFromIdempotencyKey(idempotencyKey),
+            },
+          );
+        } catch {
+          // Corrupted/stale cached template or a network-pin failure: clear it and fall through
+          // to the identity path (the hard-402 fallback refreshes the template).
+          this.challengeTemplate = undefined;
         }
+        if (paymentSignature !== undefined) {
+          const res = await this.fetchWithRetry(url, () =>
+            spec.buildRequest({
+              "Idempotency-Key": idempotencyKey,
+              "PAYMENT-SIGNATURE": paymentSignature as string,
+            }),
+          );
+          this.trackBalance(res);
+          if (res.status === 404 && spec.notFound) return spec.notFound();
+          // A 402 means the cached template was stale (trackBalance just refreshed it): fall
+          // through to the identity/credit path, self-healing on THIS call (same held claim).
+          if (res.status !== 402) {
+            if (!res.ok) throw await this.asError(res, label);
+            // Count the top-off ONLY if it actually settled on-chain (non-empty PAYMENT-RESPONSE
+            // txHash) — a credit-served op settles nothing; single-flight => at most once.
+            if (this.settledTxHash(res)) this.recordSpend(this.prepay!.topoff);
+            return spec.parseSuccess(res);
+          }
+        }
+      } finally {
+        releaseTopoff();
       }
     }
 
@@ -1037,8 +1088,18 @@ export class AgentKV {
       const usd = topoffHere
         ? this.prepay!.topoff
         : challengePriceUsd(challenge, undefined, this.network);
+      // Default no-op: EVERY branch below MUST overwrite this before committing to pay, or
+      // its spend goes silently unreserved — invisible to a concurrent session-cap check,
+      // which is the exact bug this reservation exists to prevent. A contributor adding a
+      // third branch here must set `release` too.
       let release: () => void = () => {};
-      if (!topoffHere) {
+      if (topoffHere) {
+        // A committed top-off is real USD, exactly like the op-price branch below — reserve
+        // it so a concurrent check sees it. topoffFitsSessionCap() (above) is the sole gate
+        // for a top-off, mirroring assertSpend's bypassPerOpCap: a top-off bypasses the
+        // per-op ceiling by design, so reserve directly rather than re-asserting through it.
+        release = this.reserveSession(usd);
+      } else {
         this.assertOpPriceCeiling(usd);
         release = this.assertAndReserveSpend(usd);
       }
@@ -1346,9 +1407,17 @@ export class AgentKV {
         const release = this.assertAndReserveSpend(amountUsd);
         try {
           await this.runAccountTopoff(amountUsd);
+          // runAccountTopoff() already recorded the spend internally (recordSpend runs at
+          // its end, on success) — release NOW rather than holding the reservation through
+          // the balance() round-trip below. Holding it would double-count against a
+          // concurrent op's check (once in sessionSpentUsd, again in sessionReservedUsd) and
+          // could wrongly reject a legitimate concurrent deposit that would otherwise fit.
+          release();
           const balance = await this.balance();
           return { credits_added: Math.round(amountUsd / CREDIT_VALUE_USD), balance };
         } finally {
+          // Idempotent catch-all: a no-op on the success path above (already released); the
+          // real work happens when runAccountTopoff() throws before the manual release runs.
           release();
         }
       };
@@ -1502,11 +1571,18 @@ export class AgentKV {
         throw await this.asError(res, "deposit failed");
       }
       this.recordSpend(amountUsd);
+      // Release NOW rather than holding the reservation through the res.json() parse below:
+      // the spend is already accounted for in sessionSpentUsd, so continuing to hold it in
+      // sessionReservedUsd would double-count it against a concurrent op's check and could
+      // wrongly reject a legitimate concurrent deposit/op that would otherwise fit.
+      release();
       const result = (await res.json()) as DepositResult;
       // Refresh prepay tracking with the authoritative post-deposit balance.
       if (this.prepay && Number.isFinite(result.balance)) this.knownCredits = result.balance;
       return result;
     } finally {
+      // Idempotent catch-all: a no-op on the success path above (already released); the real
+      // work happens on every throw path before the manual release runs.
       release();
     }
   }

@@ -62,11 +62,13 @@ interface AgentKVCommon {
   /** Per-paying-call USD cap; throws SpendCapError if exceeded. */
   maxSpendUsd?: number;
   /**
-   * Cumulative USD cap across this client instance. **Best-effort**: the running
-   * total is a plain in-memory counter, so concurrent paying calls can race
-   * (both pass `assertSpend` before either `recordSpend`s) and modestly overshoot
-   * the cap. It is a guardrail, not a hard ledger — serialize paying calls if you
-   * need a strict bound.
+   * Cumulative USD cap across this client instance. Enforced with a synchronous
+   * reservation taken at each spend decision — before any network round-trip — and
+   * released once that spend settles or fails, so the cap holds across CONCURRENT
+   * paying calls (including prepay top-offs racing an op or a deposit) on this
+   * instance, not just sequential ones; no need to serialize paying calls yourself.
+   * It is still local to this client instance: it does not coordinate spend across
+   * separate `AgentKV` instances or processes sharing the same wallet or account.
    */
   maxSessionSpendUsd?: number;
   /**

@@ -6,7 +6,7 @@
 // in set()/get(), precedence when both hooks are configured, and backward
 // compatibility with no hook configured at all.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentKV } from "../src/index";
+import { AgentKV, DEFAULT_MAX_OP_USD } from "../src/index";
 
 const AK = `ak_${"a".repeat(64)}`;
 const ENC = `0x${"11".repeat(32)}` as const;
@@ -68,6 +68,34 @@ describe("account-key inline branch honors spend caps", () => {
     });
     await expect(kv.set("k", { a: 1 })).rejects.toThrow(/session cap/);
     expect(inline).not.toHaveBeenCalled();
+  });
+
+  it("accepts the inline op when the session cap equals the per-op ceiling exactly (accept side)", async () => {
+    // The credit-path reservation (creditCostUsd, taken before the 402 is even seen) must
+    // be released before the inline branch takes its own — otherwise a single, uncontended
+    // op is rejected against a cap that in fact covers it exactly (regression: the credit
+    // reservation was held as dead weight alongside the inline one).
+    const inline = vi.fn(async () => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, expires_at: "x" }),
+      headers: {},
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json(402, INSUFFICIENT)),
+    );
+    const kv = new AgentKV({
+      accountKey: AK,
+      encryptionKey: ENC,
+      endpoint,
+      // No maxSpendUsd -> the op ceiling is DEFAULT_MAX_OP_USD; set the session cap to
+      // exactly that ceiling so a lingering credit-cost reservation would tip it over.
+      maxSessionSpendUsd: DEFAULT_MAX_OP_USD,
+      opInlinePayer: inline,
+    });
+    const r = await kv.set("k", { a: 1 });
+    expect(r).toMatchObject({ ok: true });
+    expect(inline).toHaveBeenCalledTimes(1);
   });
 });
 

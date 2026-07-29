@@ -166,7 +166,10 @@ describe("spend caps", () => {
       (r) => r.status === "rejected" && r.reason instanceof SpendCapError,
     ).length;
 
-    expect(signed).toBeLessThanOrEqual(2); // $10 <= $12; a third $5 would breach
+    // Exact, not just an upper bound: toBeLessThanOrEqual(2) alone would also pass if
+    // reservations over-counted so badly only ONE (or zero) ops got through — pin the
+    // correct answer precisely ($5+$5=$10<=$12; a third $5 would breach).
+    expect(signed).toBe(2);
     expect(paid).toBe(signed);
     expect(capped).toBe(8 - paid);
   });
