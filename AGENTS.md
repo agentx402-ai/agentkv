@@ -75,10 +75,15 @@ service must change in lockstep.
 both `package.json`s, `client/src/index.ts` `VERSION`, `cli/src/version.ts` `VERSION`,
 `plugin/agentkv/.claude-plugin/plugin.json`, and `plugin/agentkv/.mcp.json`'s runtime pin —
 plus the marketplace pin synced on release. CI's `versions` job (`scripts/check-versions.mjs`)
-cross-checks all six sources plus the cli→client dependency range; `publish.yml` re-runs it
-against the release tag. Publishing happens via a GitHub Release → the `publish.yml` OIDC
-trusted-publishing workflow (client before cli — dependency order). Never
-`npm publish` from a laptop.
+cross-checks all six sources — including the `.mcp.json` runtime pin — plus the cli→client
+dependency range, on every pull request. `publish.yml` does NOT call that script: it carries
+its own separate inline guard that re-checks the release tag against only five of the six
+sources (both `package.json`s, both `VERSION` consts, `plugin.json` — not `.mcp.json`), plus
+the cli→client dependency range, then a narrower re-check of just the two `package.json`s
+immediately before the `npm publish` steps. So the sixth source — the plugin's `.mcp.json`
+runtime pin — is enforced on pull requests but not by the release-time guard. Publishing
+happens via a GitHub Release → the `publish.yml` OIDC trusted-publishing workflow (client
+before cli — dependency order). Never `npm publish` from a laptop.
 
 ## Security
 

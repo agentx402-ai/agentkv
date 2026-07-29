@@ -93,6 +93,23 @@ All notable changes to AgentKV are documented here. The format follows
   arguments are billed separately. `agentkv mcp` also now warns on stderr at startup when no
   session spend cap (`AGENTKV_MAX_SESSION_SPEND_USD`) is configured, since a long-lived,
   unbudgeted server can otherwise spend without any cumulative bound.
+- **`@agentkv/client`**: `@agentx402-ai/core` moves from `^0.1.1` to `^0.2.0`, a fail-closed
+  hardening release. The client now fails closed on an unpinned or unsupported network instead
+  of guessing: `buildPaymentHeader`/`challengePriceUsd` now require the client's configured
+  network to be pinned before they will sign or price anything, and the CAIP-2 parser used for
+  EIP-712 identity-header signing now rejects a non-canonical network string instead of coercing
+  it — previously `--network eip155:0x2105` was silently accepted as Base mainnet
+  (`Number("0x2105") === 8453`) and signed into identity headers for a chain the user never
+  typed. A payment challenge whose advertised EIP-712 domain (`extra.name`/`extra.version`)
+  disagrees with the pinned asset-registry domain is now rejected too, instead of signed
+  (`domain_mismatch`). This package's own call sites already pinned `expectedNetwork` everywhere
+  `buildPaymentHeader`/`challengePriceUsd` are used, so no source changes were needed for the
+  bump itself — but five new error codes are now reachable through the existing `AgentKVError`
+  type and the CLI's exit-code mapping: `unpinned_network`, `invalid_challenge`,
+  `unsupported_network`, `invalid_amount`, `domain_mismatch`. Both `client/` and `cli/`'s
+  declared `engines.node` floor also moves to `>=20.3` (from `>=20`), matching core's own.
+- Dev-dependency bumps: `@biomejs/biome` 2.5.6, `@types/node` 26.1.2, `@x402/core`/`@x402/evm`
+  2.20.0. Dev-only — no change for consumers of either published package.
 
 ### Security
 

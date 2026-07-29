@@ -16,8 +16,13 @@ shared `@agentx402-ai/core` is released separately from [its own repo](https://g
 - `agentx402-ai/claude-plugins` → `.claude-plugin/marketplace.json` (the `agentkv` plugin's
   `source.ref`) — the cross-repo pin the shared marketplace serves; synced on release (step 7).
 
-CI's `versions` job (`scripts/check-versions.mjs`) cross-checks all six sources plus the
-cli→client dependency range; `publish.yml` re-runs it against the release tag.
+CI's `versions` job (`scripts/check-versions.mjs`) cross-checks all six sources — including
+the `.mcp.json` runtime pin — plus the cli→client dependency range, on every pull request.
+`publish.yml` does not call that script: it carries its own inline guard that re-checks the
+release tag against five of the six sources (both `package.json`s, both `VERSION` consts,
+`plugin.json`) plus the cli→client dependency range, then a narrower re-check of just the two
+`package.json`s immediately before publishing. The `.mcp.json` runtime pin is therefore
+checked by CI, not by the release-time guard.
 
 ## Publish order (required)
 

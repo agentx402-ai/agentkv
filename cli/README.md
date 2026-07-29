@@ -120,8 +120,9 @@ a per-op cap alone still leaves cumulative spend across the session unbounded. T
 for `agentkv_deposit`: unlike `agentkv_get`/`agentkv_set`, a deposit amount is caller-chosen
 rather than server-quoted, so it is not subject to the built-in per-op price ceiling that
 protects an unconfigured client from an inflated quote — without `AGENTKV_MAX_SPEND_USD`, the
-session cap is the only limit on how much a single `agentkv_deposit` call can spend. If neither
-cap is set, `agentkv mcp` prints a warning to stderr at startup.
+session cap is the only limit on how much a single `agentkv_deposit` call can spend. If
+`AGENTKV_MAX_SESSION_SPEND_USD` is unset, `agentkv mcp` prints a warning to stderr at startup —
+the check is on the session cap alone, so setting `AGENTKV_MAX_SPEND_USD` does not silence it.
 
 See the [monorepo README](https://github.com/agentx402-ai/agentkv#readme) for the SDK and the
 Claude plugin.
