@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -137,4 +137,38 @@ describe("runCli", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "a write failure cleans up the temp file and reports the real path, not the tmp name",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+      try {
+        // Make the directory read-only to force a write failure
+        chmodSync(home, 0o500);
+        const err: string[] = [];
+        const code = await runCli(["config", "--endpoint", "https://x.test"], {
+          client: fakeClient() as any,
+          env: { AGENTKV_HOME: home } as any,
+          stdout: () => {},
+          stderr: (s) => err.push(s),
+        });
+        expect(code).not.toBe(0);
+        const stderr = err.join("");
+        // Error should mention the real config.json path
+        expect(stderr).toContain("config.json");
+        // Error should NOT mention the tmp filename
+        expect(stderr).not.toContain(".tmp");
+        // No tmp file should be left behind
+        chmodSync(home, 0o755); // restore permissions to clean up
+        expect(readdirSync(home).filter((f) => f.includes("tmp"))).toEqual([]);
+      } finally {
+        try {
+          chmodSync(home, 0o755);
+        } catch {
+          // already failed to write or already cleaned up
+        }
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });

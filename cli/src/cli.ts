@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentKVError, SpendCapError } from "@agentkv/client";
@@ -163,10 +163,25 @@ function runConfig(
   if (flags.onrampAppId !== undefined) merged.onrampAppId = flags.onrampAppId;
   const path = join(dir, "config.json");
   // Atomic: write a sibling tmp then rename, so a crash mid-write can't leave a truncated
-  // config.json (which is exactly the corrupt-file case readConfigFile now refuses).
+  // config.json (which is exactly the corrupt-file case readConfigFile now refuses). On
+  // failure, remove the tmp and report the REAL path — the tmp name is an implementation
+  // detail the user never typed.
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(merged, null, 2));
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, JSON.stringify(merged, null, 2));
+    renameSync(tmp, path);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // best-effort: the tmp may not exist (write failed before creating it)
+    }
+    throw new AgentKVError(
+      `could not write ${path}: ${e instanceof Error ? e.message.replace(tmp, path) : String(e)}`,
+      "invalid_config",
+      0,
+    );
+  }
   printJson(io.stdout, { ok: true, path, ...merged });
   return EXIT.OK;
 }
