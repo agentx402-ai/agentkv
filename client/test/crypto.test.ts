@@ -116,8 +116,10 @@ describe("blind-index golden vectors (frozen wire format)", () => {
     expect(hashKey(MAC, name)).toBe(digest);
   });
 
-  it("NFD input maps onto the NFC digest (the normalization is frozen, not incidental)", () => {
-    expect(hashKey(MAC, "café")).toBe(hashKey(MAC, "café"));
+  it("an NFD-decomposed name lands on the same frozen digest as its NFC form", () => {
+    // "cafe" + U+0301 (combining acute), NOT the precomposed U+00E9 — this is the input
+    // shape that a normalization change would move off the pinned digest.
+    expect(hashKey(MAC, "café")).toBe("ASdH9_l00iBrk_YN6AajHNh15V1J5JwyFRfH8etnJgzJ");
   });
 
   it("pins the scheme tag as a literal, not as a self-referential import", () => {
