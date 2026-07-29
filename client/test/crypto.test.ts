@@ -101,6 +101,30 @@ describe("hashKey — blind index digest", () => {
   });
 });
 
+describe("blind-index golden vectors (frozen wire format)", () => {
+  const MAC = new Uint8Array(32).fill(7);
+
+  // These digests are the SERVER-VISIBLE addresses of stored values. Changing the
+  // normalization, the scheme tag, the HMAC input, or the base64url alphabet orphans
+  // already-stored data with no error — reads simply return null. Pin the exact strings.
+  it.each([
+    ["session", "AaIBTyUir0KpKocv1FyLNoPbmYf-Is06f6twUDuORtY2"],
+    ["café", "ASdH9_l00iBrk_YN6AajHNh15V1J5JwyFRfH8etnJgzJ"], // NFC-composed
+    ["ключ", "AZwdzfVVwSQcUAIhIsGSBg_Jj22IO2CSqb_ttHlFIUXZ"],
+    ["🔐", "AQhTQp5TqYCSVebXaRtkXxsAYXJlw8MOEUvkpqfOqwPc"],
+  ])("hashKey(mac, %s) is frozen", (name, digest) => {
+    expect(hashKey(MAC, name)).toBe(digest);
+  });
+
+  it("NFD input maps onto the NFC digest (the normalization is frozen, not incidental)", () => {
+    expect(hashKey(MAC, "café")).toBe(hashKey(MAC, "café"));
+  });
+
+  it("pins the scheme tag as a literal, not as a self-referential import", () => {
+    expect(DIGEST_SCHEME_V1).toBe(0x01);
+  });
+});
+
 describe("decrypt error taxonomy", () => {
   it("all decrypt failures are AgentKVError with code decrypt_failed", async () => {
     const good = await encrypt(KEY, "x");
