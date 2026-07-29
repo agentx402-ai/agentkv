@@ -465,6 +465,21 @@ export class AgentKV {
               0,
             );
           }
+          // The comment above says we do NOT normalize v — so the raw 0/1 recovery id
+          // (KMS / raw-secp256k1 wrappers) hashes to DIFFERENT key material than the same
+          // wallet's 27/28 form from viem/ethers/MetaMask, silently orphaning every stored
+          // value on a signer-library swap. Reject it here the way the length check rejects
+          // EIP-2098 / ERC-1271 shapes: those signers must pin an explicit encryptionKey.
+          const recoveryId = sigBytes[64];
+          if (recoveryId !== 27 && recoveryId !== 28) {
+            throw new AgentKVError(
+              `sign-to-derive requires the standard 27/28 recovery id but this signer returned ` +
+                `v=${recoveryId}; its signature encoding is unstable for key derivation — ` +
+                "construct with an explicit encryptionKey instead",
+              "invalid_config",
+              0,
+            );
+          }
           ikm = sigBytes;
         }
         const km = deriveKeyMaterial(ikm);

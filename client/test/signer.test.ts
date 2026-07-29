@@ -1,8 +1,8 @@
 // client/test/signer.test.ts
 
-import { hexToBytes } from "viem";
+import { bytesToHex, hexToBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decrypt, deriveKeyMaterial, encrypt, normalizeEncryptionKey } from "../src/crypto";
 import { AgentKV } from "../src/index";
 
@@ -66,6 +66,12 @@ describe("key-derivation golden vectors (data-durability contract)", () => {
   };
   const hex = (b: Uint8Array) => `0x${Buffer.from(b).toString("hex")}`;
 
+  // Arbitrary fixed bytes shaped like a 65-byte signature ending in the standard v=27
+  // recovery id. deriveKeyMaterial hashes raw ikm bytes and does not itself validate
+  // ECDSA-ness (that check lives in getKeyMaterial's 65-byte/recovery-id gate), so any
+  // fixed 65-byte value pins the derivation just as well as a real signature would.
+  const FIXED_SIG_V27 = `0x${"ab".repeat(64)}1b` as const;
+
   it("privateKey mode derives the pinned value/keyName/mac bytes", async () => {
     const km = await (new AgentKV({ privateKey: PK, endpoint: ENDPOINT }) as any).getKeyMaterial();
     expect(hex(km.value)).toBe(PRIVATEKEY_MODE.value);
@@ -87,9 +93,51 @@ describe("key-derivation golden vectors (data-durability contract)", () => {
     expect(PRIVATEKEY_MODE.value).not.toBe(SIGNER_MODE.value);
     expect(PRIVATEKEY_MODE.mac).not.toBe(SIGNER_MODE.mac);
   });
+
+  it("golden vector: a fixed v=27 signature derives stable key material", () => {
+    // Freeze the derivation so a future change to what is hashed is caught here rather than
+    // by users discovering unreadable data.
+    const km = deriveKeyMaterial(hexToBytes(FIXED_SIG_V27));
+    expect(bytesToHex(km.value)).toBe(
+      "0x096773525a4a4c6484840d08c202d7a405ac9e70d6969020aaf115465ad35dc6",
+    );
+  });
 });
 
 describe("sign-to-derive: failure + format handling", () => {
+  // Only the two recovery-id tests below reach fetch: rejection happens before any network
+  // call (post-fix), and acceptance proceeds through the credit path to a mocked 200. Stubbed
+  // for the whole block so both are deterministic and network-independent regardless of fix
+  // state — the other tests here call getKeyMaterial() directly and never touch fetch.
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(JSON.stringify({ ok: true, expires_at: "2026-01-01T00:00:00.000Z" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // KMS / raw-secp256k1 signer wrappers return the low-level recovery id (0/1) instead of
+  // viem's 27/28-offset form. Mirrors shortSigner/flakySigner below: a real address +
+  // signMessage from a deterministic account, with signTypedData stubbed to a canned 65-byte
+  // signature carrying whichever recovery id the test wants to exercise.
+  function signerReturningV(v: number) {
+    const account = privateKeyToAccount(PK);
+    return {
+      address: account.address,
+      signMessage: account.signMessage,
+      signTypedData: async () =>
+        `0x${"11".repeat(64)}${v.toString(16).padStart(2, "0")}` as `0x${string}`,
+    };
+  }
+
   it("does NOT cache a rejected derivation — a transient signTypedData failure is retryable", async () => {
     let calls = 0;
     const account = privateKeyToAccount(PK);
@@ -130,5 +178,22 @@ describe("sign-to-derive: failure + format handling", () => {
     };
     const kv = new AgentKV({ signer: shortSigner as any, endpoint: ENDPOINT });
     await expect((kv as any).getKeyMaterial()).rejects.toThrow(/65-byte EIP-712/);
+  });
+
+  it("rejects a 65-byte signature whose recovery id is the raw 0/1 form", async () => {
+    // KMS / raw-secp256k1 wrappers return v=0/1 for the SAME signature viem returns as
+    // 27/28. Hashing it derives DIFFERENT value/keyName/mac keys: swapping signer libraries
+    // on one wallet made every get() return null and listKeys() empty, with no error.
+    for (const v of [0, 1]) {
+      const kv = new AgentKV({ endpoint: ENDPOINT, signer: signerReturningV(v) as any });
+      await expect(kv.set("k", "v")).rejects.toMatchObject({ code: "invalid_config" });
+    }
+  });
+
+  it("still accepts the standard 27/28 recovery ids", async () => {
+    for (const v of [27, 28]) {
+      const kv = new AgentKV({ endpoint: ENDPOINT, signer: signerReturningV(v) as any });
+      await expect(kv.set("k", "v")).resolves.toBeDefined(); // with the suite's mocked fetch
+    }
   });
 });
