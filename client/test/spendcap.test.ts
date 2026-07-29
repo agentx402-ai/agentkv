@@ -2,9 +2,10 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentKV } from "../src/index";
-import { SpendCapError } from "../src/types";
+import { AgentKVError, SpendCapError } from "../src/types";
 
 const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
+const EP = "https://x" as const;
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -105,5 +106,40 @@ describe("spend caps", () => {
     const fetchCountBefore = fetchCount;
     await expect(kv.deposit(5)).rejects.toBeInstanceOf(SpendCapError);
     expect(fetchCount).toBe(fetchCountBefore); // no fetch calls on the rejected attempt
+  });
+});
+
+describe("spend-cap option validation (fail closed)", () => {
+  const BAD = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, "0,05"];
+
+  it.each(BAD)("rejects maxSpendUsd=%s at construction", (bad) => {
+    expect(() => new AgentKV({ endpoint: EP, privateKey: PK, maxSpendUsd: bad as number })).toThrow(
+      /maxSpendUsd/,
+    );
+  });
+
+  it.each(BAD)("rejects maxSessionSpendUsd=%s at construction", (bad) => {
+    expect(
+      () => new AgentKV({ endpoint: EP, privateKey: PK, maxSessionSpendUsd: bad as number }),
+    ).toThrow(/maxSessionSpendUsd/);
+  });
+
+  it("a rejected cap carries invalid_config (not a bare Error)", () => {
+    const err = (() => {
+      try {
+        new AgentKV({ endpoint: EP, privateKey: PK, maxSpendUsd: Number.NaN });
+        return null;
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(AgentKVError);
+    expect((err as AgentKVError).code).toBe("invalid_config");
+  });
+
+  it("still accepts an omitted cap, 0, and a finite positive cap", () => {
+    expect(new AgentKV({ endpoint: EP, privateKey: PK }).maxSpendUsd).toBeUndefined();
+    expect(new AgentKV({ endpoint: EP, privateKey: PK, maxSpendUsd: 0 }).maxSpendUsd).toBe(0);
+    expect(new AgentKV({ endpoint: EP, privateKey: PK, maxSpendUsd: 5 }).maxSpendUsd).toBe(5);
   });
 });

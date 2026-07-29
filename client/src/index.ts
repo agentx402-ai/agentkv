@@ -117,6 +117,27 @@ export function toWholeAtomicUsd(amountUsd: number): number | null {
   return atomic;
 }
 
+/**
+ * Validate a spend-cap option: `undefined` (no cap) or a finite, non-negative number.
+ * Anything else throws — a malformed cap must fail CLOSED, never silently become
+ * "unlimited" on real funds (money-safety invariant #2), matching the CLI's numOrThrow.
+ * `NaN` was strictly WORSE than no cap: `usd > NaN` is false (per-op and session caps
+ * both disabled) AND `assertOpPriceCeiling` gates on `maxSpendUsd === undefined`, so a
+ * NaN-capped client also skipped the built-in DEFAULT_MAX_OP_USD ceiling and would sign
+ * a spoofed $1000 quote that an UNCONFIGURED client rejects.
+ */
+function assertCapOption(v: number | undefined, name: string): number | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+    throw new AgentKVError(
+      `${name} must be a finite number >= 0 (omit it for no cap; got ${String(v)})`,
+      "invalid_config",
+      0,
+    );
+  }
+  return v;
+}
+
 export class AgentKV {
   /**
    * The signing wallet. `undefined` in account-key mode (a managed account has no
@@ -197,8 +218,8 @@ export class AgentKV {
     }
     this.endpoint = opts.endpoint.replace(/\/+$/, "");
     this.network = opts.network ?? DEFAULT_NETWORK;
-    this.maxSpendUsd = opts.maxSpendUsd;
-    this.maxSessionSpendUsd = opts.maxSessionSpendUsd;
+    this.maxSpendUsd = assertCapOption(opts.maxSpendUsd, "maxSpendUsd");
+    this.maxSessionSpendUsd = assertCapOption(opts.maxSessionSpendUsd, "maxSessionSpendUsd");
     // retries: NaN would make the retry condition always-false (silently no retries) and
     // Infinity would survive the clamp (unbounded loop) — reject non-finite; negatives
     // still clamp to 0 as before.
@@ -466,12 +487,14 @@ export class AgentKV {
     // Top-offs pass bypassPerOpCap: a credit purchase is not a per-op charge, so
     // the per-call cap (which bounds individual pay-per-op spend) must not gate it
     // — mirroring topoffFitsSessionCap() on the synchronous top-off paths.
-    if (!opts.bypassPerOpCap && this.maxSpendUsd !== undefined && usd > this.maxSpendUsd) {
+    // Negated <= (not >): a non-finite operand then fails CLOSED instead of open.
+    if (!opts.bypassPerOpCap && this.maxSpendUsd !== undefined && !(usd <= this.maxSpendUsd)) {
       throw new SpendCapError(`spend $${usd} exceeds per-call cap $${this.maxSpendUsd}`);
     }
+    // Negated <= (not >): a non-finite operand then fails CLOSED instead of open.
     if (
       this.maxSessionSpendUsd !== undefined &&
-      this.sessionSpentUsd + usd > this.maxSessionSpendUsd
+      !(this.sessionSpentUsd + usd <= this.maxSessionSpendUsd)
     ) {
       throw new SpendCapError(
         `spend $${usd} would exceed session cap $${this.maxSessionSpendUsd} (spent $${this.sessionSpentUsd})`,
@@ -491,7 +514,8 @@ export class AgentKV {
    * authorization. Callers who genuinely need a pricier op opt in via `maxSpendUsd`.
    */
   private assertOpPriceCeiling(usd: number): void {
-    if (this.maxSpendUsd === undefined && usd > DEFAULT_MAX_OP_USD) {
+    // Negated <= (not >): a non-finite operand then fails CLOSED instead of open.
+    if (this.maxSpendUsd === undefined && !(usd <= DEFAULT_MAX_OP_USD)) {
       throw new SpendCapError(
         `server-quoted op price $${usd} exceeds the built-in $${DEFAULT_MAX_OP_USD} op ceiling; ` +
           "set maxSpendUsd to allow a higher per-op charge",
