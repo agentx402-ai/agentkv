@@ -67,21 +67,43 @@ type FileReader = () => ConfigFile | null;
 
 /**
  * Read the on-disk config file (`<AGENTKV_HOME|~/.agentkv>/config.json`) written by
- * `agentkv config`, tolerating absence / bad JSON / permission errors by returning null.
- * This is the DEFAULT FileReader used by every production caller of resolveConfig — without
- * it, `agentkv config` was write-only: everything it persisted (endpoint, spend cap) was
- * silently ignored, so a user who ran `agentkv config --endpoint http://localhost:8787`
- * still hit the production default and paid real USDC there.
+ * `agentkv config`. A missing file returns null (the documented default); any other failure
+ * throws `invalid_config` to fail loud. A truncated file (which a non-atomic write + crash
+ * produces) is caught and throws, not silently reverted to defaults — which would retarget
+ * the endpoint to production and drop a persisted spend cap.
  */
 export function readConfigFile(env: Env = process.env): ConfigFile | null {
+  const file = join(agentkvDir(env as NodeJS.ProcessEnv), "config.json");
+  let raw: string;
   try {
-    const parsed = JSON.parse(
-      readFileSync(join(agentkvDir(env as NodeJS.ProcessEnv), "config.json"), "utf8"),
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    // Missing file = no file config (the documented default). Anything else (EACCES,
+    // EISDIR) means a config EXISTS but can't be used — fail loud rather than silently
+    // reverting the endpoint to production and dropping a persisted spend cap.
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw new AgentKVError(
+      `config file ${file} exists but could not be read: ${e instanceof Error ? e.message : String(e)}`,
+      "invalid_config",
+      0,
     );
-    return parsed && typeof parsed === "object" ? (parsed as ConfigFile) : null;
-  } catch {
-    return null; // ENOENT / invalid JSON / EACCES -> no file config
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // A truncated file (what a non-atomic write + crash produces) landed here and was
+    // treated as absent — symmetric with the deliberately-throwing corrupt account.json.
+    throw new AgentKVError(
+      `config file ${file} is not valid JSON — fix or remove it`,
+      "invalid_config",
+      0,
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new AgentKVError(`config file ${file} must contain a JSON object`, "invalid_config", 0);
+  }
+  return parsed as ConfigFile;
 }
 
 export function resolveConfig(

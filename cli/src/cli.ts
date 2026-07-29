@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentKVError, SpendCapError } from "@agentkv/client";
@@ -162,7 +162,11 @@ function runConfig(
   }
   if (flags.onrampAppId !== undefined) merged.onrampAppId = flags.onrampAppId;
   const path = join(dir, "config.json");
-  writeFileSync(path, JSON.stringify(merged, null, 2));
+  // Atomic: write a sibling tmp then rename, so a crash mid-write can't leave a truncated
+  // config.json (which is exactly the corrupt-file case readConfigFile now refuses).
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(merged, null, 2));
+  renameSync(tmp, path);
   printJson(io.stdout, { ok: true, path, ...merged });
   return EXIT.OK;
 }

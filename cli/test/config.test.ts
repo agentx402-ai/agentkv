@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AgentKVError } from "@agentkv/client";
 import { describe, expect, it } from "vitest";
-import { clientFromConfig, resolveConfig } from "../src/config";
+import { clientFromConfig, readConfigFile, resolveConfig } from "../src/config";
 
 describe("resolveConfig", () => {
   it("defaults endpoint to the hosted service when none is provided", () => {
@@ -318,5 +321,40 @@ describe("AGENTKV_BOOTSTRAP (pay-per-call bootstrap opt-in)", () => {
     expect(() => clientFromConfig(cfg, { env: walletEnv as NodeJS.ProcessEnv })).toThrow(
       /account-key/,
     );
+  });
+});
+
+describe("readConfigFile", () => {
+  it("a present-but-corrupt config.json throws instead of silently reverting to defaults", () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      writeFileSync(join(home, "config.json"), "{not json");
+      expect(() => readConfigFile({ AGENTKV_HOME: home })).toThrow(/config.json/);
+      // The danger this closes: silently treating it as absent retargets the endpoint to
+      // production AND drops a persisted spend cap, with no warning.
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a JSON scalar / array config.json is rejected as not an object", () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      for (const bad of ["null", "42", "[]"]) {
+        writeFileSync(join(home, "config.json"), bad);
+        expect(() => readConfigFile({ AGENTKV_HOME: home })).toThrow(/config.json/);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a missing config.json is still simply absent (null)", () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      expect(readConfigFile({ AGENTKV_HOME: home })).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

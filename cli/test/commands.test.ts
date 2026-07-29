@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -114,6 +114,25 @@ describe("runCli", () => {
       expect(code).not.toBe(0);
       expect(err.join("")).toMatch(/known providers/);
       expect(existsSync(join(home, "config.json"))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("config writes atomically and leaves no tmp file behind", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      const code = await runCli(["config", "--endpoint", "https://x.test"], {
+        client: fakeClient() as any,
+        env: { AGENTKV_HOME: home } as any,
+        stdout: () => {},
+        stderr: () => {},
+      });
+      expect(code).toBe(0);
+      expect(JSON.parse(readFileSync(join(home, "config.json"), "utf8")).endpoint).toBe(
+        "https://x.test",
+      );
+      expect(readdirSync(home).filter((f) => f.includes("tmp"))).toEqual([]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
