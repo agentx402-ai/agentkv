@@ -49,9 +49,10 @@ export function buildMcpServer(
     network: string;
     config: Record<string, string | undefined>;
   },
-  // Account-key mode has NO wallet address — client.address is the zero-address SENTINEL.
-  // When true, agentkv_fund REFUSES (a card purchase to the sentinel would burn real USDC)
-  // and agentkv_wallet_address reports account-key mode instead of the misleading sentinel.
+  // Account-key mode has NO wallet address — client.address is undefined (no sentinel; see
+  // the docblock on AgentKV#address in client/src/index.ts). When true, agentkv_fund REFUSES
+  // (there is no real address to send a card purchase to) and agentkv_wallet_address reports
+  // account-key mode instead of the raw undefined.
   accountMode = false,
 ): McpServer {
   const server = new McpServer({ name: "agentkv", version: VERSION });
@@ -198,7 +199,7 @@ export function buildMcpServer(
       content: [
         {
           type: "text" as const,
-          // Account-key mode has no wallet; client.address is the zero-address sentinel, so
+          // Account-key mode has no wallet; client.address is undefined (no sentinel), so
           // returning it verbatim would misrepresent identity. Report account-key mode instead.
           text: JSON.stringify(
             accountMode
@@ -225,10 +226,10 @@ export function buildMcpServer(
     },
     { title: "Fund via onramp", readOnlyHint: true, openWorldHint: true },
     async (args) => {
-      // Account-key mode has no single wallet to onramp into — client.address is the
-      // zero-address sentinel, so a completed card purchase would send real USDC to the
-      // burn address, permanently lost. Refuse and explain how account credits are funded
-      // (mirrors the CLI's runFund). This check MUST come first (before onramp/config).
+      // Account-key mode has no single wallet to onramp into — client.address is undefined
+      // (no sentinel), so there is no real address to send a completed card purchase to.
+      // Refuse and explain how account credits are funded (mirrors the CLI's runFund). This
+      // check MUST come first (before onramp/config).
       if (accountMode) {
         return toolError(
           "Account-key mode has no single wallet to onramp into. Account credits are funded by " +

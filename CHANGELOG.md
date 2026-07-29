@@ -8,24 +8,28 @@ All notable changes to AgentKV are documented here. The format follows
 
 ### Added
 
-- **`@agentkv/client`**: constructor options are now validated fail-fast (`invalid_config`) —
-  a missing or malformed `endpoint` (must be an absolute `http`/`https` URL), a non-finite
-  `retries`, conflicting auth shapes (e.g. `accountKey` alongside a wallet, or `privateKey`
-  alongside an explicit `encryptionKey`), and malformed hook/option values (`topoffPayer`,
-  `opInlinePayer`, `bootstrap`, `prepay.watermark`, …) now throw at construction instead of
-  failing later with a confusing runtime error. `set()`'s `ttlDays` and `listKeys()`'s `limit`
-  are validated the same way (`invalid_value`).
-- **`@agentkv/client`**: a tampered or corrupted stored value now throws a distinguishing
-  `decrypt_failed` `AgentKVError` instead of an opaque low-level crypto exception.
-- **`@agentkv/cli`**: `agentkv deposit` (and the MCP `agentkv_deposit` tool) now accepts
-  fractional USD amounts that resolve to a whole number of atomic USDC units (e.g. `$33.30`),
-  reusing the client's exported `toWholeAtomicUsd`. A `--limit` flag that isn't a positive
-  integer now fails closed instead of forwarding `NaN`/`0` to the wire.
+- **`@agentkv/cli`**: `agentkv deposit` now accepts fractional USD amounts that resolve to a
+  whole number of atomic USDC units (e.g. `$33.30`), reusing the client's exported
+  `toWholeAtomicUsd`. A `--limit` flag that isn't a positive integer now fails closed instead
+  of forwarding `NaN`/`0` to the wire.
 - **`@agentkv/cli`**: `agentkv config` now persists `--onramp-provider` / `--onramp-app-id`,
   matching the endpoint/network/spend-cap flags it already saved.
 
 ### Changed
 
+- **`@agentkv/client`**: constructor options now reject three previously-unvalidated shapes at
+  construction (`invalid_config`) instead of failing later, or not at all: a missing or
+  malformed `endpoint` (must be an absolute `http`/`https` URL), a non-finite `retries`, and
+  `accountKey` passed alongside a wallet (`privateKey`/`signer`) — which used to silently drop
+  the wallet and proceed in account-key mode instead of rejecting the ambiguous config.
+  `set()`'s `ttlDays` and `listKeys()`'s `limit` are now validated the same way
+  (`invalid_value`) instead of reaching the wire. A pre-existing guard — rejecting
+  `privateKey` alongside an explicit `encryptionKey` — is unchanged but is now pinned by a
+  regression test.
+- **`@agentkv/client`**: a tampered or corrupted stored value now throws a distinguishing
+  `decrypt_failed` `AgentKVError` instead of an opaque low-level crypto exception; `decrypt`
+  is re-exported from the package root, so this also changes what a caller using it directly
+  sees.
 - **`@agentkv/client`**: `listKeys()` now normalizes an empty-string cursor from the server to
   `null`, so a `while (cursor !== null)` pagination loop terminates instead of looping forever.
 - **`@agentkv/cli`**: a corrupt `wallet.json` now fails with a descriptive error naming the
@@ -63,6 +67,8 @@ All notable changes to AgentKV are documented here. The format follows
   transport only, never an HTTP one — and because the SDK is declared `^1.0.0`, consumers
   resolve it through their own tree regardless. No runtime behavior change in either
   published package.
+
+[Unreleased]: https://github.com/agentx402-ai/agentkv/compare/v0.2.2...HEAD
 
 ## [0.2.2] — 2026-07-28
 

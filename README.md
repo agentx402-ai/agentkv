@@ -89,10 +89,11 @@ agentkv set mykey '{"hello":"world"}'
 agentkv get mykey
 ```
 
-The client auto-selects account-key mode when `AGENTKV_ACCOUNT_KEY` is set, or when an
-`account.json` file exists **and** no `AGENTKV_PRIVATE_KEY` is set — an explicit
-`AGENTKV_PRIVATE_KEY` keeps wallet mode (a different namespace + encryption key). Otherwise it
-uses the wallet.
+The client auto-selects account-key mode when `AGENTKV_ACCOUNT_KEY` is set (it wins over
+everything, including an explicit `AGENTKV_PRIVATE_KEY`), or when an `account.json` file
+exists and no `AGENTKV_PRIVATE_KEY` is set — there, an explicit private key beats only the
+stored file, not the env key (each mode is a different namespace + encryption key). Otherwise
+it uses the wallet.
 
 #### Auto top-off (stay funded without manual deposits)
 

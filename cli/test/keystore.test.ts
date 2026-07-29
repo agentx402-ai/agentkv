@@ -75,8 +75,10 @@ describe("keystore", () => {
       // A concurrent first run: a racing process has already minted + persisted a VALID wallet
       // at wallet.json. Because readKey() succeeds, getOrCreateStoredWallet adopts THAT key
       // (created:false) instead of minting a competing one — the same identity the caller would
-      // fund. (The wx-write EEXIST branch is the same recovery for the readKey()==null-at-first
-      // interleaving; covered below.)
+      // fund. (The wx-write EEXIST branch's null-on-retry fallthrough is reachable only via a
+      // created-then-deleted race now that readKey() throws — rather than returning null — on
+      // a corrupt file; that race is intentionally untested here. Corrupt-file behavior itself
+      // is covered directly by the readKey tests in this file.)
       const competitorKey = generatePrivateKey();
       const competitorAddr = privateKeyToAccount(competitorKey).address;
       writeFileSync(

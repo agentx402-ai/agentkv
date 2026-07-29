@@ -129,6 +129,7 @@ describe("MCP account-key mode awareness", () => {
   });
 
   it("account mode: wallet_address reports account-key mode, never the zero-address sentinel", async () => {
+    // Deliberately ZERO, not undefined — adversarial: proves below that the value never leaks.
     const tools = toolsFor(fakeClient({ address: ZERO }), true);
     const res = await tools.agentkv_wallet_address.handler({}, {});
     const body = JSON.parse(res.content[0].text);
