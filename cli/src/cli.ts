@@ -82,7 +82,7 @@ export async function runCli(argv: string[], deps: Deps = {}): Promise<number> {
       // Handle mcp BEFORE building a client — startMcp builds its own (with the stderr
       // notify). Building one here would do the config/keystore work twice and discard it.
       const { startMcp } = await import("./mcp.js");
-      await startMcp({ env: deps.env, client: deps.client });
+      await startMcp({ env: deps.env, client: deps.client, stderr: deps.stderr });
       return EXIT.OK;
     }
     // Only these commands need a client. Dispatch on cmd FIRST so an unknown/typo'd command

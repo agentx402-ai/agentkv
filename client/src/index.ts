@@ -1163,6 +1163,14 @@ export class AgentKV {
     // The claim may also be taken later at a hard 402 (cold-start fallback) inside performOp().
     const flight = { claimed: this.tryClaimTopoff() };
     try {
+      // Mirror the CLI's --ttl-days rule (finite, >= 0): a NaN here would otherwise serialize
+      // as ttl_days:null on a PAID write, silently dropping the caller's retention choice.
+      // Validated up front — before getKeyMaterial()/encrypt() below — so a bad ttlDays throws
+      // before a sign-to-derive `{ signer }` client ever prompts the wallet to sign; mirrors
+      // listKeys()'s limit check, which validates before getKeyMaterial() for the same reason.
+      if (opts.ttlDays !== undefined && (!Number.isFinite(opts.ttlDays) || opts.ttlDays < 0)) {
+        throw new AgentKVError("ttlDays must be a finite number >= 0", "invalid_value", 0);
+      }
       const plaintext = JSON.stringify(value);
       // Reject null/undefined (and anything that stringifies to undefined: functions,
       // symbols). Stored values are always a defined JSON value, so a null from get()
@@ -1185,11 +1193,6 @@ export class AgentKV {
         value: ciphertext,
         key_name: await encrypt(km.keyName, key),
       };
-      // Mirror the CLI's --ttl-days rule (finite, >= 0): a NaN here serializes as
-      // ttl_days:null on a PAID write, silently dropping the caller's retention choice.
-      if (opts.ttlDays !== undefined && (!Number.isFinite(opts.ttlDays) || opts.ttlDays < 0)) {
-        throw new AgentKVError("ttlDays must be a finite number >= 0", "invalid_value", 0);
-      }
       // camelCase API option -> snake_case wire field.
       if (opts.ttlDays !== undefined) body.ttl_days = opts.ttlDays;
       if (opts.strictTtl !== undefined) body.strict_ttl = opts.strictTtl;

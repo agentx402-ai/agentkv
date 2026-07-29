@@ -74,6 +74,11 @@ opt-in payer key for `agentkv account fund <usd> --from-key <0xhex>` (fund a dec
 from a wallet other than the configured one); prefer `AGENTKV_PAYER_KEY` to keep the key out of
 shell history / `ps` argv.
 
+Non-secret defaults set via `agentkv config` persist to `~/.agentkv/config.json`, which is read
+before it's rewritten, so a corrupted file can't be auto-repaired — `agentkv config` fails with
+`… is not valid JSON — fix or remove it`; fix or remove it by hand, then re-run `agentkv config`
+to persist your settings again.
+
 | Variable | Description |
 |----------|-------------|
 | `AGENTKV_PRIVATE_KEY` | Wallet key (hex). Unset → a local wallet is auto-provisioned on first use. |

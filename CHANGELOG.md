@@ -10,8 +10,7 @@ All notable changes to AgentKV are documented here. The format follows
 
 - **`@agentkv/cli`**: `agentkv deposit` now accepts fractional USD amounts that resolve to a
   whole number of atomic USDC units (e.g. `$33.30`), reusing the client's exported
-  `toWholeAtomicUsd`. A `--limit` flag that isn't a positive integer now fails closed instead
-  of forwarding `NaN`/`0` to the wire.
+  `toWholeAtomicUsd`.
 - **`@agentkv/cli`**: `agentkv config` now persists `--onramp-provider` / `--onramp-app-id`,
   matching the endpoint/network/spend-cap flags it already saved.
 
@@ -26,6 +25,8 @@ All notable changes to AgentKV are documented here. The format follows
   (`invalid_value`) instead of reaching the wire. A pre-existing guard — rejecting
   `privateKey` alongside an explicit `encryptionKey` — is unchanged but is now pinned by a
   regression test.
+- **`@agentkv/cli`**: a `--limit` flag that isn't a positive integer now fails closed instead
+  of forwarding `NaN`/`0` to the wire, mirroring the client-side `listKeys()` guard above.
 - **`@agentkv/client`**: a tampered or corrupted stored value now throws a distinguishing
   `decrypt_failed` `AgentKVError` instead of an opaque low-level crypto exception; `decrypt`
   is re-exported from the package root, so this also changes what a caller using it directly
@@ -120,11 +121,12 @@ All notable changes to AgentKV are documented here. The format follows
   invocation. It publishes only the `client/dist` + `cli/dist` handed over from the build
   job, after verifying they are a complete build. See `SECURITY.md` for what that does and
   does not cover.
-- A release now refuses any ref that is not a `vX.Y.Z` tag whose commit matches all five
-  version sources, so a Release tagged ahead of the committed version cannot publish the
-  wrong one. A prerelease tag publishes under the `next` dist-tag rather than failing at
-  npm. GitHub Actions are pinned to commit SHAs, both workflows declare least-privilege
-  `permissions`, and `npm audit` gates CI and release.
+- A release now refuses any ref that is not a `vX.Y.Z` tag whose commit matches five of the
+  six version sources (the plugin's `.mcp.json` runtime pin is checked by CI on every pull
+  request, not by this release-time guard), so a Release tagged ahead of the committed
+  version cannot publish the wrong one. A prerelease tag publishes under the `next` dist-tag
+  rather than failing at npm. GitHub Actions are pinned to commit SHAs, both workflows
+  declare least-privilege `permissions`, and `npm audit` gates CI and release.
 - Lockfile advisories cleared: `fast-uri` 3.1.3 → 3.1.4 and `postcss` 8.5.16 → 8.5.24 (both
   high, dev chain), and `@modelcontextprotocol/sdk` 1.29.0 → 1.30.0, which pulls
   `@hono/node-server` 2.x and resolves a moderate `serve-static` path-traversal advisory.
