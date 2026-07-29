@@ -12,7 +12,12 @@
 // field must be applied to BOTH in lockstep (a one-sided bump breaks every paid op).
 // NB: Base mainnet (8453) name is "USD Coin" but Base Sepolia (84532) name is "USDC".
 import { getDefaultAsset } from "@x402/evm";
+import { getAddress } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
+import { buildPaymentHeader } from "../src/payment";
+
+const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 
 const EXPECTED = {
   "eip155:8453": {
@@ -36,5 +41,69 @@ describe("x402 USDC asset + EIP-712 domain parity (matches the backend pin)", ()
       expect(asset.name).toBe(want.name);
       expect(asset.version).toBe(want.version);
     }
+  });
+});
+
+// buildPaymentHeader() (in @agentx402-ai/core) signs the REGISTRY's EIP-712 domain
+// (asset.name/asset.version pinned above), never a challenge's server-supplied `extra` — and
+// rejects (`domain_mismatch`) a challenge whose `extra` disagrees with it, so a compromised or
+// misconfigured server advertising the wrong domain name gets caught before anything is
+// signed, not silently "corrected" into a signature the facilitator would reject anyway. The
+// parity assertion above pins that the CONSTANTS are right; these pin that the CLIENT actually
+// ENFORCES them against a lying challenge — the two are complementary, not redundant.
+//
+// This block exists in its own right: a batch of *other* test fixtures across this package had
+// hardcoded the wrong `extra.name` for Base mainnet ("USDC" instead of the real "USD Coin"),
+// which incidentally exercised this rejection path by accident on every one of them. Correcting
+// those fixtures removed that accidental coverage and left this money-safety gate — the one
+// thing standing between a hostile/misconfigured server and a client blindly signing whatever
+// EIP-712 domain it's told to — with nothing pinning it on purpose.
+function challengeHeader(network: keyof typeof EXPECTED, extraName: string): string {
+  return btoa(
+    JSON.stringify({
+      x402Version: 2,
+      accepts: [
+        {
+          scheme: "exact",
+          network,
+          amount: "5000",
+          asset: EXPECTED[network].address,
+          payTo: "0x0000000000000000000000000000000000000001",
+          maxTimeoutSeconds: 300,
+          extra: { name: extraName, version: "2" },
+        },
+      ],
+    }),
+  );
+}
+
+describe("buildPaymentHeader enforces the domain parity pin (rejects a lying challenge)", () => {
+  const account = privateKeyToAccount(PK);
+
+  it('Base mainnet challenge advertising "USDC" (the Sepolia name) is REJECTED as domain_mismatch', async () => {
+    const lying = challengeHeader("eip155:8453", "USDC");
+    await expect(
+      buildPaymentHeader(account, lying, { expectedNetwork: "eip155:8453" }),
+    ).rejects.toMatchObject({ code: "domain_mismatch" });
+  });
+
+  it('Base mainnet challenge advertising the correct "USD Coin" is accepted (the check does not blanket-reject)', async () => {
+    const truthful = challengeHeader("eip155:8453", "USD Coin");
+    const header = await buildPaymentHeader(account, truthful, {
+      expectedNetwork: "eip155:8453",
+    });
+    const decoded = JSON.parse(atob(header));
+    expect(decoded.accepted.scheme).toBe("exact");
+    expect(getAddress(decoded.payload.authorization.from)).toBe(getAddress(account.address));
+  });
+
+  it('Base Sepolia challenge advertising its OWN correct "USDC" is accepted — the mainnet/testnet asymmetry is real, not a leftover typo', async () => {
+    const truthful = challengeHeader("eip155:84532", "USDC");
+    const header = await buildPaymentHeader(account, truthful, {
+      expectedNetwork: "eip155:84532",
+    });
+    const decoded = JSON.parse(atob(header));
+    expect(decoded.accepted.scheme).toBe("exact");
+    expect(getAddress(decoded.payload.authorization.from)).toBe(getAddress(account.address));
   });
 });
