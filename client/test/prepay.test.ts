@@ -292,6 +292,74 @@ describe("prepay: synchronous single-flight across an await (b) (CRITICAL)", () 
   });
 });
 
+describe("prepay: deposit() holds the top-off single-flight against a concurrent op (CRITICAL)", () => {
+  it("deposit() blocks a concurrent watermark top-off from firing a second purchase", async () => {
+    // Regression: deposit()'s topoffInFlight claim (wallet mode, non-account branch) is the
+    // ONLY thing stopping a concurrent op's watermark-triggered top-off from firing a SECOND
+    // on-chain purchase while the deposit is still settling (knownCredits stays stale-low
+    // until runDeposit refreshes it post-settle). Drop the claim and a deposit(5) concurrent
+    // with a set() double-purchases: $5 (the deposit) + $20 (set's rogue top-off) = $25 spent
+    // for a $5 deposit. No session cap is configured here — this pins the single-flight
+    // claim itself, not the (separately tested) session-cap reservation around it.
+    const calls: Captured[] = [];
+    let releasePaidDeposit: ((res: Response) => void) | undefined;
+    const paidDepositGate = new Promise<Response>((resolve) => {
+      releasePaidDeposit = resolve;
+    });
+
+    mockFetch(calls, (cap) => {
+      if (cap.url.includes("/credits/deposit")) {
+        if (!cap.headers.get("PAYMENT-SIGNATURE")) {
+          // Deposit's cold-start probe: 402 challenge for the $5 deposit.
+          return new Response("{}", {
+            status: 402,
+            headers: { "PAYMENT-REQUIRED": challengeHeader() },
+          });
+        }
+        // The paid retry is held open until the test explicitly releases it, so the
+        // single-flight claim is PROVABLY still held (not inferred from timing) while
+        // the concurrent set() below runs.
+        return paidDepositGate;
+      }
+      // The KV op (set): always succeeds — the server still has real credits; only the
+      // CLIENT's cached knownCredits is stale-low. Keeps reporting that stale-low balance
+      // plus a fresh template so a wrongly-claimed proactive top-off (if the guard were
+      // dropped) has everything it needs to actually fire.
+      return new Response(JSON.stringify({ ok: true, expires_at: "x" }), {
+        status: 200,
+        headers: { "X-AgentKV-Credits-Remaining": "5000", "PAYMENT-REQUIRED": challengeHeader() },
+      });
+    });
+
+    const kv = new AgentKV({
+      privateKey: PK,
+      endpoint,
+      prepay: { watermark: 10, topoff: 20 },
+    });
+
+    // Prime: knownCredits=5000 (< the $10 / 100,000-credit watermark) + cache the template —
+    // exactly what a concurrent set() needs to win tryClaimTopoff() and fire the $20 top-off.
+    await kv.set("session", "prime");
+    calls.length = 0;
+
+    const depositPromise = kv.deposit(5);
+    // Dispatched immediately after, with no intervening await: deposit() claims
+    // topoffInFlight synchronously before its own first await, so set()'s synchronous
+    // tryClaimTopoff() check (at the very top of set(), before it awaits anything) is
+    // guaranteed to observe that claim.
+    const setPromise = kv.set("session", "v");
+    releasePaidDeposit?.(
+      new Response(JSON.stringify({ credits_added: 50000, balance: 50000 }), { status: 200 }),
+    );
+    await Promise.all([depositPromise, setPromise]);
+
+    // Exactly ONE authorization across the concurrent pair: the $5 deposit. If the claim in
+    // deposit() were dropped, set()'s own proactive top-off would ALSO fire, adding a second
+    // "20000000" ($20) authorization here.
+    expect(paymentCalls(calls).map((c) => c.paymentValue)).toEqual(["5000000"]);
+  });
+});
+
 describe("prepay: PAYG default unchanged (c)", () => {
   it("with NO prepay config, a 402 pays the OP price, never a top-off", async () => {
     const calls: Captured[] = [];
