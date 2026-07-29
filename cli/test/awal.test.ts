@@ -117,4 +117,16 @@ describe("awalTopoffPayer", () => {
     await expect(awalTopoffPayer(exec)(REQ)).rejects.toThrow(/ak_…/);
     await expect(awalTopoffPayer(exec)(REQ)).rejects.not.toThrow(new RegExp(AK));
   });
+
+  it("rejects a {success:false} payload even when it carries no error field", async () => {
+    const exec = async () => ({ stdout: JSON.stringify({ success: false }), stderr: "" });
+    await expect(awalTopoffPayer(exec as never)(REQ)).rejects.toThrow(/awal top-off/);
+  });
+
+  it("still resolves on a success payload, and on legacy output with neither field", async () => {
+    for (const out of [{ success: true, txHash: "0xabc" }, { txHash: "0xabc" }]) {
+      const exec = async () => ({ stdout: JSON.stringify(out), stderr: "" });
+      await expect(awalTopoffPayer(exec as never)(REQ)).resolves.toBeUndefined();
+    }
+  });
 });
