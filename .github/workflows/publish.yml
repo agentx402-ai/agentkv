@@ -45,10 +45,10 @@ on:
   workflow_dispatch:
 
 # Deny by default; each job opts into exactly the scopes it needs.
-# No `concurrency` group on purpose: a run held in `Waiting` for the environment's required
-# reviewer would hold it for up to 30 days, blocking any other release from starting — and at
-# the default queue depth of 1 a third arrival silently CANCELS the pending one. npm already
-# rejects a duplicate version, which is the race a group would have guarded against.
+# No `concurrency` group on purpose. At the default queue depth of 1, a third arrival while
+# one run is queued silently CANCELS the pending one — reported as `cancelled`, so no failure
+# notification fires and a release simply never publishes. npm already rejects a duplicate
+# version, which is the race a group would have guarded against.
 permissions: {}
 
 jobs:
@@ -178,10 +178,10 @@ jobs:
           # "Re-run all jobs" — the primary recovery from a transient publish failure — dies
           # on a 409 conflict.
           overwrite: true
-          # Must cover the FULL time a release can sit awaiting the environment's required
-          # reviewer: GitHub holds it for up to 30 days. Any shorter and an approval landing
-          # after expiry fails at download-artifact with the approval already spent.
-          retention-days: 30
+          # The publish job consumes this immediately, so this only has to outlive a later
+          # "Re-run failed jobs" on a release that failed at the publish step — which reuses
+          # the run's existing artifact rather than rebuilding it.
+          retention-days: 7
 
   # Privileged: holds trusted-publishing rights for both packages. Runs no dependency code.
   publish:
@@ -189,10 +189,10 @@ jobs:
     runs-on: ubuntu-latest
     # LOAD-BEARING, do not remove. The npm Trusted Publisher for @agentkv/client and
     # @agentkv/cli pins this environment, so the OIDC token's `environment` claim must be
-    # `release` or npm rejects the publish. That is what makes the environment's required
-    # reviewer and tag-only deployment policy an enforced boundary rather than a repo
-    # setting: a branch carrying a modified copy of this workflow with `environment:`
-    # stripped out mints a token that no longer matches the binding. (Fails closed.)
+    # `release` or npm rejects the publish. That is what makes the environment's tag-only
+    # deployment policy an enforced boundary rather than a repo setting: a branch carrying
+    # a modified copy of this workflow with `environment:` stripped out mints a token that
+    # no longer matches the binding. (Fails closed.)
     environment: release
     permissions:
       contents: read

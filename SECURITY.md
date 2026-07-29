@@ -155,9 +155,8 @@ real USDC payments:
 - **Actions are pinned to commit SHAs**, not mutable tags, and Dependabot keeps those pins current.
 - **A release publishes only the tag's own commit.** The workflow refuses any ref that is not a
   `vX.Y.Z` tag whose commit matches all five version sources (`RELEASING.md`), and the `release`
-  environment restricts deployments to `v*` tags and requires a human reviewer. Because npm derives
-  provenance from the triggering ref, the attestation always names the commit the shipped code came
-  from.
+  environment restricts deployments to `v*` tags. Because npm derives provenance from the
+  triggering ref, the attestation always names the commit the shipped code came from.
 - **A high-severity `npm audit` finding in a runtime dependency blocks CI and release**; one in the
   dev/build chain blocks CI, where it can still be fixed on a branch.
 
