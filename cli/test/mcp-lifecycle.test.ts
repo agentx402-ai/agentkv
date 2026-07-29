@@ -214,6 +214,64 @@ describe("MCP server startup: env scrub (server-construction level)", () => {
   });
 });
 
+// Visibility, not a default cap: the MCP server is one long-lived client with NO cumulative
+// spend bound by default. Rather than impose a default cap (which would silently change spend
+// behavior for existing users), startMcp warns ONCE at startup when
+// AGENTKV_MAX_SESSION_SPEND_USD is unset — so an operator who didn't intend an unbounded
+// server finds out immediately instead of discovering it after the fact.
+//
+// Same in-process harness as the env-scrub block above: startMcp's config resolution + the
+// warning check both run synchronously before its first `await` (server.connect), so the
+// write (or non-write) has already happened by the time this synchronous call returns
+// control here — see the comment on the scrub test for the full explanation. The writer is
+// INJECTED (deps.stderr, the same `Writer` shape cli.ts's own stdout/stderr deps use) rather
+// than captured off the real process.stderr, precisely so this stays a synchronous, in-process
+// assertion instead of a real stdio/subprocess capture.
+describe("MCP server startup: session spend cap warning", () => {
+  // Never invoked — these tests only check what startMcp writes at startup.
+  const client = {
+    set: () => Promise.resolve({ ok: true }),
+    get: () => Promise.resolve(null),
+    delete: () => Promise.resolve({ ok: true }),
+    deposit: () => Promise.resolve({}),
+    balance: () => Promise.resolve(0),
+    address: "0xabc",
+  };
+
+  it("warns on stderr when the server starts with no session spend cap", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-warn-"));
+    const env = {
+      AGENTKV_HOME: home,
+      AGENTKV_ENDPOINT: "https://example.invalid",
+    } as NodeJS.ProcessEnv;
+    const chunks: string[] = [];
+    try {
+      void startMcp({ env, client: client as any, stderr: (s) => chunks.push(s) }).catch(() => {});
+      const written = chunks.join("");
+      expect(written).toMatch(/no session spend cap configured/);
+      expect(written).toContain("AGENTKV_MAX_SESSION_SPEND_USD");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("stays quiet when AGENTKV_MAX_SESSION_SPEND_USD is configured", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-nowarn-"));
+    const env = {
+      AGENTKV_HOME: home,
+      AGENTKV_ENDPOINT: "https://example.invalid",
+      AGENTKV_MAX_SESSION_SPEND_USD: "5",
+    } as NodeJS.ProcessEnv;
+    const chunks: string[] = [];
+    try {
+      void startMcp({ env, client: client as any, stderr: (s) => chunks.push(s) }).catch(() => {});
+      expect(chunks).toHaveLength(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.skipIf(process.platform === "win32")("CLI bin entry point", () => {
   it("runs when invoked via a POSIX symlink named `agentkv` (npm-install shape), not just dist/cli.js", () => {
     // npm installs the bin as a symlink `agentkv` -> dist/cli.js; Node does NOT realpath

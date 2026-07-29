@@ -75,6 +75,53 @@ describe("MCP tools", () => {
   });
 });
 
+describe("MCP tool annotations", () => {
+  // Minimal fake — these tests only inspect registered annotations, never invoke a handler.
+  function fakeClient() {
+    return {
+      set: vi.fn(),
+      get: vi.fn(),
+      delete: vi.fn(),
+      deposit: vi.fn(),
+      balance: vi.fn(),
+      listKeys: vi.fn(),
+      address: "0xabc0000000000000000000000000000000000000",
+      endpoint: "https://staging.example",
+    };
+  }
+
+  it("agentkv_get is not annotated read-only: it is a paid op that can settle on-chain", () => {
+    const server = buildMcpServer(fakeClient() as never);
+    const ann = (
+      server as never as {
+        _registeredTools: Record<string, { annotations?: Record<string, unknown> }>;
+      }
+    )._registeredTools.agentkv_get.annotations;
+    expect(ann?.readOnlyHint).toBe(false);
+    expect(ann?.idempotentHint).toBe(true);
+  });
+
+  it("every read-only-annotated tool is free: no readOnlyHint:true tool spends", () => {
+    // Guard rail for future tools: the free set is balance / wallet_address / list_keys / fund-url.
+    const server = buildMcpServer(fakeClient() as never);
+    const tools = (
+      server as never as {
+        _registeredTools: Record<string, { annotations?: Record<string, unknown> }>;
+      }
+    )._registeredTools;
+    const readOnly = Object.entries(tools)
+      .filter(([, t]) => t.annotations?.readOnlyHint === true)
+      .map(([n]) => n)
+      .sort();
+    expect(readOnly).toEqual([
+      "agentkv_balance",
+      "agentkv_fund",
+      "agentkv_list_keys",
+      "agentkv_wallet_address",
+    ]);
+  });
+});
+
 describe("MCP account-key mode awareness", () => {
   const ZERO = "0x0000000000000000000000000000000000000000";
   const WALLET_ADDR = "0xabc0000000000000000000000000000000000000";

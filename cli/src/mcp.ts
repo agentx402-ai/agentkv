@@ -5,6 +5,7 @@ import { z } from "zod";
 import { clientFromConfig, readConfigFile, resolveConfig } from "./config.js";
 import { peekStoredAccount } from "./keystore.js";
 import { getOnrampProvider } from "./onramp.js";
+import type { Writer } from "./output.js";
 import {
   forbiddenEnvKey,
   readEnvSecret,
@@ -114,7 +115,12 @@ export function buildMcpServer(
           "Stable key making a retried read exactly-once — reuse the same value across retries so the server dedupes instead of double-charging",
         ),
     },
-    { title: "Get value", readOnlyHint: true, openWorldHint: true },
+    // NOT read-only: a get is a PAID op (credits, or real USDC settled on-chain per call
+    // under AGENTKV_INLINE=awal). Hosts use these annotations to decide when to prompt a
+    // human before spending, so an auto-approving host must not be told this is free.
+    // Idempotent: repeating a read with the same idempotency_key hits the server's read
+    // idempotency record instead of charging again.
+    { title: "Get value", readOnlyHint: false, idempotentHint: true, openWorldHint: true },
     async (args) => ({
       content: [
         {
@@ -478,10 +484,25 @@ export function buildMcpServer(
 }
 
 export async function startMcp(
-  deps: { env?: NodeJS.ProcessEnv; client?: Parameters<typeof buildMcpServer>[0] } = {},
+  deps: {
+    env?: NodeJS.ProcessEnv;
+    client?: Parameters<typeof buildMcpServer>[0];
+    /** Injected so tests can capture it; defaults to real stderr (never stdout — see below). */
+    stderr?: Writer;
+  } = {},
 ): Promise<void> {
   const env = deps.env ?? process.env;
+  const stderr = deps.stderr ?? ((s: string) => process.stderr.write(s));
   const cfg = resolveConfig({}, env, () => readConfigFile(env));
+  // Visibility, not a default cap: an unbudgeted long-lived server can spend without a
+  // cumulative bound, and agentkv_deposit is exempt from the built-in per-op ceiling. Say
+  // so once at startup rather than changing anyone's spend behavior silently.
+  if (cfg.maxSessionSpendUsd === undefined) {
+    stderr(
+      "agentkv mcp: no session spend cap configured — this server can spend without a " +
+        "cumulative bound. Set AGENTKV_MAX_SESSION_SPEND_USD (and AGENTKV_MAX_SPEND_USD) to bound it.\n",
+    );
+  }
   const client =
     deps.client ??
     clientFromConfig(cfg, {
