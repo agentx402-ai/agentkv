@@ -59,6 +59,23 @@ describe("resolveConfig", () => {
     expect(cfg.maxSpendUsd).toBeUndefined(); // a $0 cap would block every paid op
   });
 
+  it.each([["0,05"], [Number.NaN], [-5], [true], [null]] as unknown[][])(
+    "malformed config.json maxSpendUsd (%s) throws — the file is not an unvalidated cap source",
+    (bad) => {
+      expect(() => resolveConfig({}, {}, () => ({ maxSpendUsd: bad }) as never)).toThrow(
+        /maxSpendUsd/,
+      );
+    },
+  );
+
+  it("a valid file cap is still honored when no flag or env cap is set", () => {
+    expect(resolveConfig({}, {}, () => ({ maxSpendUsd: 0.05 })).maxSpendUsd).toBe(0.05);
+  });
+
+  it("rejects a non-string endpoint in config.json instead of passing it through", () => {
+    expect(() => resolveConfig({}, {}, () => ({ endpoint: 42 }) as never)).toThrow(/endpoint/);
+  });
+
   it("wires maxSessionSpendUsd ONLY from AGENTKV_MAX_SESSION_SPEND_USD (decoupled from per-op)", () => {
     const perOp = resolveConfig({}, { AGENTKV_ENDPOINT: "https://e", AGENTKV_MAX_SPEND_USD: "5" });
     expect(perOp.maxSpendUsd).toBe(5);

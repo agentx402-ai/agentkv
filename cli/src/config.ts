@@ -98,16 +98,18 @@ export function resolveConfig(
   // cap that refuses every paid op, and an empty AGENTKV_NETWORK would blank the default.
   // Defaults to the hosted service so users of the one hosted endpoint don't have to set
   // it; override via --endpoint / AGENTKV_ENDPOINT / config when needed.
-  const endpoint =
-    flags.endpoint ?? envStr(env.AGENTKV_ENDPOINT) ?? file.endpoint ?? DEFAULT_ENDPOINT;
+  const fileEndpoint = strOrThrowVal(file.endpoint, "config.json endpoint");
+  const fileNetwork = strOrThrowVal(file.network, "config.json network");
+  const fileOnrampProvider = strOrThrowVal(file.onrampProvider, "config.json onrampProvider");
+  const fileOnrampAppId = strOrThrowVal(file.onrampAppId, "config.json onrampAppId");
   return {
-    endpoint,
-    network: flags.network ?? envStr(env.AGENTKV_NETWORK) ?? file.network ?? "eip155:8453",
+    endpoint: flags.endpoint ?? envStr(env.AGENTKV_ENDPOINT) ?? fileEndpoint ?? DEFAULT_ENDPOINT,
+    network: flags.network ?? envStr(env.AGENTKV_NETWORK) ?? fileNetwork ?? "eip155:8453",
     // Per-operation cap (throws on a single op above this).
     maxSpendUsd:
       flags.maxSpendUsd ??
       numOrThrow(env.AGENTKV_MAX_SPEND_USD, "AGENTKV_MAX_SPEND_USD") ??
-      file.maxSpendUsd,
+      numOrThrowVal(file.maxSpendUsd, "config.json maxSpendUsd"),
     // Cumulative, instance-lifetime cap — env-only, opt-in. Kept SEPARATE from the
     // per-op cap: the MCP server is one long-lived client, so coupling them would turn
     // a per-op ceiling into a lifetime budget that eventually blocks every op.
@@ -125,13 +127,13 @@ export function resolveConfig(
     onrampProvider:
       flags.onrampProvider ??
       envStr(env.AGENTKV_ONRAMP_PROVIDER) ??
-      file.onrampProvider ??
+      fileOnrampProvider ??
       "coinbase",
     // Provider config bag. Currently just Coinbase's appId; new keys go here without
     // changing the command. appId is non-secret (a public CDP project id) so it may come
     // from flag/env/file.
     onrampConfig: {
-      appId: flags.onrampAppId ?? envStr(env.AGENTKV_ONRAMP_APP_ID) ?? file.onrampAppId,
+      appId: flags.onrampAppId ?? envStr(env.AGENTKV_ONRAMP_APP_ID) ?? fileOnrampAppId,
     },
     // Account-key auto top-off: env-only. Validated at client construction
     // (clientFromConfig), where the auth mode is known.
@@ -188,6 +190,33 @@ function numOrThrow(s: string | undefined, name: string): number | undefined {
     throw new Error(`${name} must be a non-negative number (got ${JSON.stringify(v)})`);
   }
   return n;
+}
+
+/**
+ * The already-parsed (config.json) counterpart of numOrThrow. The file was the ONE cap
+ * source that skipped validation — flags fail closed in parseFlags, env in numOrThrow —
+ * so a hand-edited or externally written `"0,05"` reached the SDK as NaN and silently
+ * disabled the per-op cap AND the built-in op ceiling.
+ */
+function numOrThrowVal(v: unknown, name: string): number | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+    throw new AgentKVError(
+      `${name} must be a non-negative number (got ${JSON.stringify(v)})`,
+      "invalid_config",
+      0,
+    );
+  }
+  return v;
+}
+
+/** Type-check a string field from config.json (a wrong-typed value would flow on silently). */
+function strOrThrowVal(v: unknown, name: string): string | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "string" || v.trim() === "") {
+    throw new AgentKVError(`${name} must be a non-empty string`, "invalid_config", 0);
+  }
+  return v.trim();
 }
 
 function privateKeySigner(pk: `0x${string}`) {
