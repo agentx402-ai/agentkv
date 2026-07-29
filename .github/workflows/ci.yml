@@ -9,40 +9,86 @@ on:
     paths-ignore:
       - '**.md'
 
+# Deny by default. The repo's default workflow-token setting is already read-only, but that
+# is a mutable repo setting; pinning it here means a flip of that setting cannot silently
+# widen what a CI run can do. Each job re-grants only what it needs.
+permissions: {}
+
+# Actions are pinned to full commit SHAs, not mutable tags: a moved or compromised tag would
+# otherwise execute attacker code in CI, and publish.yml shares the same action set.
+# Dependabot (.github/dependabot.yml, github-actions ecosystem) bumps these.
+# `npm ci --ignore-scripts` throughout mirrors publish.yml — nothing here needs an install
+# script, so nothing gets arbitrary execution merely from being installed. (It also skips the
+# root `prepare` hook, which only wires local git hooks and is meaningless on a runner.)
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run lint # biome: format + lint (no build needed)
 
   build-test:
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         node: [20, 22]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "${{ matrix.node }}"
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build # MUST precede test: cli typecheck resolves @agentkv/client via client/dist
       - run: npm test # tsc --noEmit + vitest, both workspaces
 
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      # Two gates. The first is what consumers are exposed to. The second is the HARD
+      # full-tree gate — a high-severity advisory in the dev chain that BUILDS the published
+      # bundles fails CI, where it is fixable on a branch; publish.yml deliberately downgrades
+      # that second one to a warning so a late dev-chain advisory cannot strand an
+      # already-tagged release. (`--audit-level` sets only the exit-code threshold; the report
+      # still lists everything, so low/moderate findings stay visible in the log.)
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --audit-level=high
+
   plugin-manifests:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22"
       - name: Validate plugin manifests are well-formed JSON
@@ -58,20 +104,28 @@ jobs:
 
   pack:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22"
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm pack --dry-run --workspaces
 
   no-internal-refs:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Fail on private/internal references in tracked files
         run: |
           # Keep the public tree free of the private backend repo name and its
@@ -85,11 +139,17 @@ jobs:
 
   versions:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22"
+      # publish.yml runs this same check against the release TAG, so a mismatch is caught
+      # again at the one moment it becomes irreversible.
       - name: All five version sources + the cli→client dep must match (RELEASING.md)
         run: |
           node -e '

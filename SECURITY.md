@@ -134,6 +134,35 @@ this settles that op's price on-chain per-request rather than debiting prepaid c
   argv) and any error awal itself reports are redacted (`ak_…`) before propagating to the SDK.
 - **Fixed timeout.** The subprocess is bounded to 120s (`windowsHide` on Windows).
 
+## Release integrity
+
+The published tarballs are the security boundary that matters most for packages that authorize
+real USDC payments:
+
+- **OIDC trusted publishing, no npm token** — nothing long-lived exists to steal — with npm
+  **provenance attestations** on every publish. The Trusted Publisher for each package is bound to
+  this repository, the `publish.yml` workflow, **and** its `release` environment, so a token minted
+  by any other job, or by a modified copy of that workflow, is rejected.
+- **The job holding publishing rights runs no third-party code**: no dependency install, no
+  bundler, no test runner, and `--ignore-scripts` on every npm invocation. Install, build, test, and
+  audit run in a separate unprivileged job with no `id-token` permission, which hands over only the
+  built `client/dist` + `cli/dist`. Read that precisely: it protects the publishing **credential**,
+  not payload integrity — the dist is still produced by the bundler in the build job, so a
+  compromised build dependency could still get its output published. The lockfile, the audit gate,
+  `--ignore-scripts`, and SHA-pinned actions are what narrow that.
+- **Installs use `--ignore-scripts`** in CI and release, so a compromised transitive dependency
+  gains no execution merely from being installed.
+- **Actions are pinned to commit SHAs**, not mutable tags, and Dependabot keeps those pins current.
+- **A release publishes only the tag's own commit.** The workflow refuses any ref that is not a
+  `vX.Y.Z` tag whose commit matches all five version sources (`RELEASING.md`), and the `release`
+  environment restricts deployments to `v*` tags and requires a human reviewer. Because npm derives
+  provenance from the triggering ref, the attestation always names the commit the shipped code came
+  from.
+- **A high-severity `npm audit` finding in a runtime dependency blocks CI and release**; one in the
+  dev/build chain blocks CI, where it can still be fixed on a branch.
+
+Verify a published version with `npm audit signatures` and check its provenance on the package page.
+
 ## Known advisories
 
 `npm audit` may report a high-severity advisory for **`ws`** (GHSA-96hv-2xvq-fx4p), pulled in
@@ -141,6 +170,13 @@ transitively through `viem`. AgentKV's client uses `viem` **only for signing and
 utilities** and never opens a WebSocket transport, so the affected code path is not reachable from
 this SDK. This repository pins a patched `ws` via an `overrides` entry; downstream consumers resolve
 `ws` through their own dependency tree, so keep `viem`/`ws` up to date (Dependabot is enabled here).
+
+`npm audit` also reports a **low** advisory for **`esbuild`** (GHSA-g7r4-m6w7-qqqr) via `tsup`'s
+pinned copy. It affects only esbuild's development server on Windows, which nothing here runs;
+esbuild is a build-time dependency and reaches no consumer. `tsup` caps itself at `esbuild ^0.27.0`,
+and forcing a newer one through `overrides` does not reach that nested copy without a full lockfile
+regeneration that would drag in unrelated prerelease transitives — so it stays, below the
+`--audit-level=high` gate, until `tsup` widens its range.
 
 ## Supported versions
 

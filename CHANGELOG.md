@@ -4,6 +4,30 @@ All notable changes to AgentKV are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+
+- **The release pipeline no longer runs third-party code in the job that can publish.**
+  `publish.yml` is split into an unprivileged build job (install, lint, build, test, audit)
+  and a publish job that holds the OIDC trusted-publishing rights but runs no dependency
+  code — no install, no bundler, no test runner, and `--ignore-scripts` on every npm
+  invocation. It publishes only the `client/dist` + `cli/dist` handed over from the build
+  job, after verifying they are a complete build. See `SECURITY.md` for what that does and
+  does not cover.
+- A release now refuses any ref that is not a `vX.Y.Z` tag whose commit matches all five
+  version sources, so a Release tagged ahead of the committed version cannot publish the
+  wrong one. A prerelease tag publishes under the `next` dist-tag rather than failing at
+  npm. GitHub Actions are pinned to commit SHAs, both workflows declare least-privilege
+  `permissions`, and `npm audit` gates CI and release.
+- Lockfile advisories cleared: `fast-uri` 3.1.3 → 3.1.4 and `postcss` 8.5.16 → 8.5.24 (both
+  high, dev chain), and `@modelcontextprotocol/sdk` 1.29.0 → 1.30.0, which pulls
+  `@hono/node-server` 2.x and resolves a moderate `serve-static` path-traversal advisory.
+  That advisory was **not reachable from this CLI** — `agentkv mcp` uses the stdio
+  transport only, never an HTTP one — and because the SDK is declared `^1.0.0`, consumers
+  resolve it through their own tree regardless. No runtime behavior change in either
+  published package.
+
 ## [0.2.2] - 2026-07-29
 
 ### Changed
