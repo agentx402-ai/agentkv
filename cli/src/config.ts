@@ -102,6 +102,9 @@ export function resolveConfig(
   const fileNetwork = strOrThrowVal(file.network, "config.json network");
   const fileOnrampProvider = strOrThrowVal(file.onrampProvider, "config.json onrampProvider");
   const fileOnrampAppId = strOrThrowVal(file.onrampAppId, "config.json onrampAppId");
+  // A malformed persisted cap is a config error even when shadowed — it would otherwise
+  // silently become the active cap the moment the flag is dropped. Validate it unconditionally.
+  const fileMaxSpendUsd = numOrThrowVal(file.maxSpendUsd, "config.json maxSpendUsd");
   return {
     endpoint: flags.endpoint ?? envStr(env.AGENTKV_ENDPOINT) ?? fileEndpoint ?? DEFAULT_ENDPOINT,
     network: flags.network ?? envStr(env.AGENTKV_NETWORK) ?? fileNetwork ?? "eip155:8453",
@@ -109,7 +112,7 @@ export function resolveConfig(
     maxSpendUsd:
       flags.maxSpendUsd ??
       numOrThrow(env.AGENTKV_MAX_SPEND_USD, "AGENTKV_MAX_SPEND_USD") ??
-      numOrThrowVal(file.maxSpendUsd, "config.json maxSpendUsd"),
+      fileMaxSpendUsd,
     // Cumulative, instance-lifetime cap — env-only, opt-in. Kept SEPARATE from the
     // per-op cap: the MCP server is one long-lived client, so coupling them would turn
     // a per-op ceiling into a lifetime budget that eventually blocks every op.

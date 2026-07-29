@@ -1,3 +1,4 @@
+import { AgentKVError } from "@agentkv/client";
 import { describe, expect, it } from "vitest";
 import { clientFromConfig, resolveConfig } from "../src/config";
 
@@ -68,12 +69,52 @@ describe("resolveConfig", () => {
     },
   );
 
+  it("malformed config.json maxSpendUsd throws AgentKVError with invalid_config code", () => {
+    try {
+      resolveConfig({}, {}, () => ({ maxSpendUsd: "0,05" }) as never);
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(AgentKVError);
+      expect((e as AgentKVError).code).toBe("invalid_config");
+    }
+  });
+
   it("a valid file cap is still honored when no flag or env cap is set", () => {
     expect(resolveConfig({}, {}, () => ({ maxSpendUsd: 0.05 })).maxSpendUsd).toBe(0.05);
   });
 
+  it("a zero file cap is still honored (not confused with unset/falsy)", () => {
+    expect(resolveConfig({}, {}, () => ({ maxSpendUsd: 0 })).maxSpendUsd).toBe(0);
+  });
+
+  it("malformed config.json cap throws even when shadowed by a flag", () => {
+    expect(() =>
+      resolveConfig({ maxSpendUsd: 5 }, {}, () => ({ maxSpendUsd: "0,05" }) as never),
+    ).toThrow(/maxSpendUsd/);
+  });
+
+  it("malformed config.json cap throws even when shadowed by an env var", () => {
+    expect(() =>
+      resolveConfig({}, { AGENTKV_MAX_SPEND_USD: "5" }, () => ({ maxSpendUsd: NaN }) as never),
+    ).toThrow(/maxSpendUsd/);
+  });
+
   it("rejects a non-string endpoint in config.json instead of passing it through", () => {
     expect(() => resolveConfig({}, {}, () => ({ endpoint: 42 }) as never)).toThrow(/endpoint/);
+  });
+
+  it("rejects an empty-string endpoint in config.json", () => {
+    expect(() => resolveConfig({}, {}, () => ({ endpoint: "" }) as never)).toThrow(/endpoint/);
+  });
+
+  it("rejects a malformed endpoint with AgentKVError and invalid_config code", () => {
+    try {
+      resolveConfig({}, {}, () => ({ endpoint: 42 }) as never);
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(AgentKVError);
+      expect((e as AgentKVError).code).toBe("invalid_config");
+    }
   });
 
   it("wires maxSessionSpendUsd ONLY from AGENTKV_MAX_SESSION_SPEND_USD (decoupled from per-op)", () => {
