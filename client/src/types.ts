@@ -69,6 +69,10 @@ interface AgentKVCommon {
    * instance, not just sequential ones; no need to serialize paying calls yourself.
    * It is still local to this client instance: it does not coordinate spend across
    * separate `AgentKV` instances or processes sharing the same wallet or account.
+   * `fundAccount()` is a deliberate exception to both this cap and `maxSpendUsd`: it pays
+   * from a caller-supplied EXTERNAL payer wallet/signer, not this client's own tracked
+   * spend, so an account-key client's funding calls sit outside either budget — see its
+   * own doc comment.
    */
   maxSessionSpendUsd?: number;
   /**

@@ -48,6 +48,13 @@ threads it into the MCP server for you — **no shell environment variables to s
 | Max per-operation spend (USD) | No | refuses any single operation costing more than this; leave empty for no per-op cap |
 | Max session spend (USD) | No | refuses further operations once cumulative spend across the whole MCP session exceeds this; leave empty for no session cap |
 
+For a long-lived session, set **both** the per-operation and session caps above — a per-op cap
+alone still leaves cumulative spend unbounded. This matters most for `agentkv_deposit`: since a
+deposit amount is caller-chosen (not server-quoted), it isn't subject to the built-in per-op
+price ceiling that bounds `agentkv_get`/`agentkv_set` when no per-op cap is set — without a
+configured per-op cap, the session cap is the only limit on a single deposit call. Leave both
+blank and the server still runs, but logs a startup warning that it has no cumulative bound.
+
 Don't have a wallet? Generate one first with `npx @agentkv/cli wallet new` and paste that key.
 To change any of these later, run `/plugin` and reconfigure the `agentkv` plugin.
 

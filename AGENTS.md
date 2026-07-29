@@ -57,7 +57,12 @@ Client code here authorizes real USDC payments. Two invariants are load-bearing:
    regressions in `client/test/account-topoff.test.ts` (setter-trap window tests) pin
    it; if your change breaks one, the change is wrong, not the test.
 2. **Spend caps.** `maxSpendUsd` / `AGENTKV_MAX_SPEND_USD` must bound every path that
-   can spend, including payer-hook ceilings (`--max-amount` handed to the hook).
+   can spend, including payer-hook ceilings (`--max-amount` handed to the hook). A cap must
+   also fail closed on malformed input — a `NaN`/`Infinity`/negative/non-number value throws
+   `invalid_config` at construction and when read from `config.json`, never silently becomes
+   "unlimited" — and hold under concurrency: the session cap is enforced with a synchronous
+   reservation taken at check time, not a stale post-settlement counter, so concurrent spends
+   can't each pass the same check.
 
 Error-code strings (`account_not_provisioned`, `insufficient_credits`, …) and the
 x402/EIP-712 domain constants are pinned to the server's canon; parity tests here

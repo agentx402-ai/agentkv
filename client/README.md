@@ -28,6 +28,11 @@ const credits = await kv.balance();
 > message). Switching shapes makes previously written data unreadable and unlisted — reads
 > return `null`, no error. To migrate between shapes (or use a KMS/hardware signer), pin an
 > explicit `encryptionKey`.
+>
+> Sign-to-derive (the `{ signer }` shape) also requires the signer's `signTypedData` to return a
+> signature with the standard `27`/`28` ECDSA recovery id. A KMS or raw-secp256k1 wrapper that
+> returns `v ∈ {0, 1}` throws `invalid_config` rather than silently deriving different key
+> material — those signers must pin an explicit `encryptionKey` too.
 
 ### Account-key mode (managed wallets that can't sign)
 
@@ -156,7 +161,9 @@ for details.
   `encryptionKey`); the server only ever stores ciphertext it cannot read.
 - **Pay per request** — pay-as-you-go in USDC, or pre-pay credits at **a tenth** the pay-per-op
   price. `prepay: { watermark, topoff }` keeps credits auto-topped-up, and `maxSpendUsd` /
-  `maxSessionSpendUsd` cap per-call and cumulative spend.
+  `maxSessionSpendUsd` cap per-call and cumulative spend. Both must be finite and non-negative —
+  a malformed value (`NaN`, `Infinity`, negative, or non-number) throws `invalid_config` at
+  construction; "no cap" is expressed by omitting the option, never by passing `Infinity`.
 
 See the [monorepo README](https://github.com/agentx402-ai/agentkv#readme) for the CLI, MCP server,
 and Claude plugin.

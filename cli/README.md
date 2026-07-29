@@ -91,6 +91,9 @@ shell history / `ps` argv.
 | `AGENTKV_INLINE` | Account-key inline pay-per-op payer. Only value: `awal` — pays each `/kv` op via `npx awal x402 pay` at request time, no prepaid credits required. Requires an authenticated, funded awal. If both `AGENTKV_TOPOFF` and `AGENTKV_INLINE` are set, top-off takes precedence per op. |
 | `AGENTKV_BOOTSTRAP` | Account-key only. `1`/`true` opts in to letting `AGENTKV_TOPOFF`/`AGENTKV_INLINE` pay the *first-ever* op on a brand-new, unfunded account (an `account_not_provisioned` 402), not just ordinary out-of-credit 402s. Auto-`true` when the key came from this CLI's own minted `account.json` (never from an env-supplied `AGENTKV_ACCOUNT_KEY`). Rejected in wallet mode. |
 
+For the long-lived `agentkv mcp` server, set **both** `AGENTKV_MAX_SPEND_USD` and
+`AGENTKV_MAX_SESSION_SPEND_USD` — see MCP server below.
+
 On the awal path `AGENTKV_PREPAY_TOPOFF` is passed only as a `--max-amount` ceiling — the
 worker's `/account/deposit` 402 quotes the actual amount minted (≥ $1 server minimum), capped at
 that ceiling, so raising it above the server minimum may not increase what actually gets deposited.
@@ -110,6 +113,15 @@ In account-key mode (`AGENTKV_ACCOUNT_KEY` set, or a stored account with no `AGE
 the two wallet-funding tools — `agentkv_deposit` and `agentkv_fund` — refuse with a structured
 error, since a managed account has no wallet to deposit or buy USDC into; fund it by depositing to
 `<endpoint>/account/deposit` from a signing wallet instead.
+
+Because the MCP server is a long-lived process handling many calls over its lifetime, set
+**both** `AGENTKV_MAX_SPEND_USD` and `AGENTKV_MAX_SESSION_SPEND_USD` (see Configuration above) —
+a per-op cap alone still leaves cumulative spend across the session unbounded. This matters most
+for `agentkv_deposit`: unlike `agentkv_get`/`agentkv_set`, a deposit amount is caller-chosen
+rather than server-quoted, so it is not subject to the built-in per-op price ceiling that
+protects an unconfigured client from an inflated quote — without `AGENTKV_MAX_SPEND_USD`, the
+session cap is the only limit on how much a single `agentkv_deposit` call can spend. If neither
+cap is set, `agentkv mcp` prints a warning to stderr at startup.
 
 See the [monorepo README](https://github.com/agentx402-ai/agentkv#readme) for the SDK and the
 Claude plugin.

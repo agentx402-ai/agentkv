@@ -45,6 +45,54 @@ All notable changes to AgentKV are documented here. The format follows
   reference is most likely to land), and the build/test matrix gained Node 24 (`publish.yml`'s
   runtime). The version-lockstep check moved into `scripts/check-versions.mjs`, which also
   covers a sixth source — the plugin's pinned MCP runtime — on every pull request.
+- **`@agentkv/client`**: `maxSpendUsd` / `maxSessionSpendUsd` now reject a malformed value
+  (`NaN`, `Infinity`, negative, or non-number) at construction (`invalid_config`) instead of
+  silently accepting it. A `NaN` cap was strictly WORSE than no cap at all: `usd > NaN` is
+  always false, so it disabled both the per-op and the session cap, AND — because the built-in
+  ceiling only guards an unconfigured client — it also defeated the built-in $0.05 per-op price
+  ceiling that protects against a spoofed or compromised worker's inflated quote.
+- **`@agentkv/cli`**: the same rule now applies to a spend cap read from `config.json` — a
+  malformed persisted value throws `invalid_config` instead of reaching the SDK as `NaN`, and is
+  validated even when a `--max-spend-usd` flag or `AGENTKV_MAX_SPEND_USD` env value shadows it,
+  so a corrupt file can't become the live cap the moment the override is removed.
+- **`@agentkv/client`**: the cumulative session cap (`maxSessionSpendUsd`) is now enforced with
+  a synchronous reservation taken at the moment each spend is checked — covering ops, deposits,
+  and top-offs alike — instead of only being counted after settlement. Previously, concurrent
+  calls could all check against the same stale spent-so-far counter, all pass, and all sign real
+  EIP-3009 authorizations, so the cumulative cap provided no bound at all under concurrency.
+- **`@agentkv/cli`**: `agentkv account fund` now honors the resolved `maxSpendUsd` /
+  `maxSessionSpendUsd` caps the same way `deposit` does (previously unbounded), and now errors
+  instead of silently discarding a payer key passed as a stray positional argument — the ambient
+  `AGENTKV_PAYER_KEY` / `AGENTKV_PRIVATE_KEY` wallet would otherwise have paid instead, with no
+  indication a different wallet was used.
+- **`@agentkv/cli`**: a corrupt or non-JSON `config.json` now fails loud (`invalid_config`)
+  instead of silently reverting to defaults — which would retarget the endpoint to production
+  and drop a persisted spend cap. `agentkv config` now writes atomically (temp file + rename)
+  and removes the temp file on a failed write, so a crash mid-write can no longer produce the
+  truncated file that the read path now refuses.
+- **`@agentkv/client`**: sign-to-derive (the `{ signer }` shape with no explicit
+  `encryptionKey`) now rejects a signature whose recovery id (`v`) is not the standard `27`/`28`
+  (`invalid_config`) instead of hashing it into different key material. **Migration note:** some
+  KMS and raw-secp256k1 signer wrappers return `v ∈ {0,1}`; such signers must now construct with
+  an explicit `encryptionKey`. Data already written under the previous silent derivation from a
+  `v ∈ {0,1}` signature is not readable through the public API — this makes loud (a thrown
+  `invalid_config`) what was previously silent data loss (`get`/`listKeys` quietly returning
+  `null`/empty with no error).
+- **`@agentkv/client`**: a supplied `encryptionKey` is now copied into the client's retained key
+  material instead of aliased — previously, a caller that zeroized its own key buffer after
+  construction (good hygiene) would silently cause every subsequent key derivation to use zeros.
+- **`@agentkv/cli`**: the `awal`-backed `topoffPayer` now rejects an `{success:false}`
+  settlement payload even when it carries no `error` field, instead of treating a missing
+  `error` as confirmation that the top-off settled. awal collapses every failure mode (payment
+  failure, insufficient balance, network error, non-2xx) into `{success:false, error}` — a
+  payload with the flag and no message is still a failure, not a settled deposit.
+- **`@agentkv/cli`**: the MCP server's `agentkv_get` tool is now annotated `readOnlyHint:false,
+  destructiveHint:false, idempotentHint:false` instead of read-only — a `get` is a paid
+  operation (credits, or real USDC settled per call under `AGENTKV_INLINE=awal`), and since the
+  optional `idempotency_key` defaults to a fresh nonce per call, two calls with identical tool
+  arguments are billed separately. `agentkv mcp` also now warns on stderr at startup when no
+  session spend cap (`AGENTKV_MAX_SESSION_SPEND_USD`) is configured, since a long-lived,
+  unbudgeted server can otherwise spend without any cumulative bound.
 
 ### Security
 
