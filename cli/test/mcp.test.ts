@@ -90,15 +90,25 @@ describe("MCP tool annotations", () => {
     };
   }
 
-  it("agentkv_get is not annotated read-only: it is a paid op that can settle on-chain", () => {
+  it("agentkv_get is not annotated read-only, destructive, or idempotent", () => {
     const server = buildMcpServer(fakeClient() as never);
     const ann = (
       server as never as {
         _registeredTools: Record<string, { annotations?: Record<string, unknown> }>;
       }
     )._registeredTools.agentkv_get.annotations;
+    // Paid op — see agentkv_get's tool description ("costs $0.003 USD per read"); a get can
+    // settle real USDC on-chain per call under AGENTKV_INLINE=awal account mode.
     expect(ann?.readOnlyHint).toBe(false);
-    expect(ann?.idempotentHint).toBe(true);
+    // A read never modifies stored data. destructiveHint defaults to TRUE (per the MCP spec)
+    // when omitted, so this must be set explicitly — matching the sibling agentkv_get_to_file.
+    expect(ann?.destructiveHint).toBe(false);
+    // idempotency_key is OPTIONAL: when the caller omits it (the default call shape),
+    // client.get() mints a fresh random nonce per call, so two calls with IDENTICAL tool
+    // arguments are billed separately. idempotentHint means "same arguments, no additional
+    // effect" — false here, matching the sibling read tools agentkv_get_to_file and
+    // agentkv_run_with_secret, which wrap the same client.get() through the same optional key.
+    expect(ann?.idempotentHint).toBe(false);
   });
 
   it("every read-only-annotated tool is free: no readOnlyHint:true tool spends", () => {

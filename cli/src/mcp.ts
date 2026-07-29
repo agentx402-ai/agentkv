@@ -118,9 +118,24 @@ export function buildMcpServer(
     // NOT read-only: a get is a PAID op (credits, or real USDC settled on-chain per call
     // under AGENTKV_INLINE=awal). Hosts use these annotations to decide when to prompt a
     // human before spending, so an auto-approving host must not be told this is free.
-    // Idempotent: repeating a read with the same idempotency_key hits the server's read
-    // idempotency record instead of charging again.
-    { title: "Get value", readOnlyHint: false, idempotentHint: true, openWorldHint: true },
+    // NOT destructive: a read never modifies stored data. destructiveHint defaults to TRUE
+    // (per the MCP spec) when omitted, so this must be set explicitly — matching the sibling
+    // agentkv_get_to_file.
+    // NOT idempotent either: idempotency_key is OPTIONAL, and idempotentHint means "repeating
+    // the SAME ARGUMENTS has no additional effect". When the caller omits the key (the default
+    // call shape), client.get() mints a fresh random nonce per call, so two calls with
+    // identical tool arguments are billed separately (see client/src/index.ts: "Two SEPARATE
+    // get()s still use distinct keys — separately charged"). Only reusing an explicit
+    // idempotency_key across a retry dedupes server-side — a narrower guarantee than this
+    // boolean can express, so it stays false, matching the sibling read tools
+    // agentkv_get_to_file and agentkv_run_with_secret (same client.get(), same optional key).
+    {
+      title: "Get value",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     async (args) => ({
       content: [
         {

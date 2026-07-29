@@ -6,7 +6,7 @@
  * dummy private key so wallet_address can be derived locally (no network needed).
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -270,6 +270,73 @@ describe("MCP server startup: session spend cap warning", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  // The two tests above inject a fake `stderr` writer and prove the warning reaches IT — but
+  // they'd pass identically even if the code ALSO wrote to real stdout (an injected writer
+  // can't observe that). Close that gap for real: spawn the actual built binary (bypassing
+  // StdioClientTransport/Client, which only exposes the PARSED JSON-RPC channel, never raw
+  // bytes) and capture stdout/stderr as separate raw byte streams, mirroring the
+  // "auto-provision notice goes to stderr" test's spawn/teardown idiom above.
+  it("real subprocess: the warning is on stderr and never on stdout (the JSON-RPC channel)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-stdio-"));
+    const child = spawn(process.execPath, [CLI_PATH, "mcp"], {
+      env: {
+        ...DUMMY_ENV,
+        AGENTKV_HOME: home, // isolate keystore, matching the other subprocess tests
+        AGENTKV_MAX_SESSION_SPEND_USD: "", // explicit unset — DUMMY_ENV spreads real process.env
+      },
+      stdio: ["pipe", "pipe", "pipe"], // keep stdin open (no EOF) so the server doesn't exit early
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => {
+      stdout += d.toString("utf8");
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString("utf8");
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `timed out waiting for the stderr warning (stderr so far: ${JSON.stringify(stderr)})`,
+              ),
+            ),
+          10_000,
+        );
+        child.once("error", (e) => {
+          clearTimeout(timer);
+          reject(e);
+        });
+        const check = () => {
+          if (stderr.includes("no session spend cap configured")) {
+            clearTimeout(timer);
+            resolve();
+          }
+        };
+        child.stderr.on("data", check);
+        check(); // in case the write already landed before this listener was attached
+      });
+      // stdout and stderr are independent OS pipes with NO cross-stream delivery-order
+      // guarantee: observing the text on stderr proves nothing about whether a stray stdout
+      // write has finished arriving yet. Give any in-flight stdout data a beat to land before
+      // asserting on it — otherwise this test could pass merely because it checked before a
+      // real leak's bytes made it through the pipe (verified: without this delay, a deliberate
+      // stdout leak of the exact same warning text was NOT caught).
+      await new Promise((r) => setTimeout(r, 500));
+      expect(stderr).toContain("no session spend cap configured");
+      expect(stderr).toContain("AGENTKV_MAX_SESSION_SPEND_USD");
+      // No JSON-RPC request was ever sent, so stdout — the JSON-RPC channel — must be
+      // untouched: in particular, never the warning text (the whole point of this test).
+      expect(stdout).not.toContain("no session spend cap configured");
+      expect(stdout).toBe("");
+    } finally {
+      child.kill();
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe.skipIf(process.platform === "win32")("CLI bin entry point", () => {
