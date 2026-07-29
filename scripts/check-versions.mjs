@@ -1,7 +1,13 @@
 // scripts/check-versions.mjs — the version-lockstep gate (RELEASING.md).
 // Usage:
 //   node scripts/check-versions.mjs           # all sources agree with each other (CI `versions` job)
-//   node scripts/check-versions.mjs v0.2.3    # ...and with the given release tag (publish.yml)
+//   node scripts/check-versions.mjs v0.2.3    # ...and with the given release tag — manual/local use
+//
+// ci.yml's `versions` job is this script's only automated caller on this branch, and it always
+// runs with no tag argument. publish.yml does NOT call this script — it carries its own separate
+// inline tag-vs-source guard (see AGENTS.md / RELEASING.md). The tag-argument mode above still
+// works and is useful to run by hand before cutting a release; it just isn't wired into any
+// workflow here.
 import { readFileSync } from "node:fs";
 
 const read = (p) => readFileSync(p, "utf8");
@@ -27,8 +33,11 @@ if (dep !== `^${v.clientPkg}`) {
   console.error(`::error::cli dependency on @agentkv/client (${dep}) != ^${v.clientPkg}`);
   process.exit(1);
 }
-// Falsy (absent OR empty) means "no tag to check": publish.yml passes '' on
-// workflow_dispatch re-runs, which must not fail the source-agreement-only check.
+// Falsy (absent OR empty) means "no tag to check" — this also runs as a source-agreement-only
+// check with nothing to compare against a tag. ci.yml's `versions` job is what actually relies
+// on this: it always calls the script with no argument (`argv[2]` is undefined), so it only
+// ever exercises this branch. The empty-string case is accepted the same way for a caller that
+// resolves a tag dynamically and might come up empty; nothing on this branch currently does that.
 const tag = process.argv[2];
 if (tag && tag.replace(/^v/, "") !== uniq[0]) {
   console.error(
