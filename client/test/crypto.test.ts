@@ -21,6 +21,15 @@ describe("crypto key derivation", () => {
     expect(normalizeEncryptionKey(new Uint8Array(32)).length).toBe(32);
     expect(() => normalizeEncryptionKey(new Uint8Array(16))).toThrow(/32 bytes/);
   });
+
+  it("copies the caller's key bytes: zeroizing the source buffer after construction is safe", async () => {
+    // Zeroizing key material after handing it over is good hygiene — aliasing the caller's
+    // buffer silently re-derived every key from zeros instead.
+    const source = new Uint8Array(32).fill(9);
+    const normalized = normalizeEncryptionKey(source);
+    source.fill(0);
+    expect(Array.from(normalized)).toEqual(Array.from(new Uint8Array(32).fill(9)));
+  });
 });
 
 const KEY = new Uint8Array(32).fill(7); // raw AES-256 key (encrypt/decrypt use it directly)

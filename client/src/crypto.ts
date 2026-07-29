@@ -32,7 +32,10 @@ export function normalizeEncryptionKey(key: Uint8Array | `0x${string}`): Uint8Ar
   if (bytes.length !== KEY_LENGTH) {
     throw new Error(`encryption key must be 32 bytes, got ${bytes.length}`);
   }
-  return bytes;
+  // COPY: the result is retained as the HKDF ikm for the client's lifetime. Aliasing the
+  // caller's array means a caller that zeroizes its key buffer after construction (good
+  // hygiene) would silently derive every key from zeros.
+  return bytes.slice();
 }
 
 /**
