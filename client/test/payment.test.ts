@@ -108,10 +108,10 @@ describe("client/src/payment.ts back-compat re-export (moved to @agentx402-ai/co
         maxTimeoutSeconds: 300,
       },
     ]);
-    const header = await buildPaymentHeader(account, challenge);
+    const header = await buildPaymentHeader(account, challenge, { expectedNetwork: NETWORK });
     const decoded = JSON.parse(atob(header));
     expect(decoded.accepted.scheme).toBe("exact");
     expect(getAddress(decoded.payload.authorization.from)).toBe(getAddress(account.address));
-    expect(challengePriceUsd(challenge)).toBeCloseTo(0.005, 6);
+    expect(challengePriceUsd(challenge, undefined, NETWORK)).toBeCloseTo(0.005, 6);
   });
 });

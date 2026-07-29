@@ -31,7 +31,7 @@ function challengeHeader(amountAtomic: number): string {
           payTo: "0x0000000000000000000000000000000000000001",
           resource: "/kv/k", // extra field (worker omits) — client must ignore it
           maxTimeoutSeconds: 600, // matches the worker's MAX_TIMEOUT_SECONDS
-          extra: { name: "USDC", version: "2" },
+          extra: { name: "USD Coin", version: "2" },
         },
       ],
     }),
