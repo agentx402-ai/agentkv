@@ -143,3 +143,136 @@ describe("spend-cap option validation (fail closed)", () => {
     expect(new AgentKV({ endpoint: EP, privateKey: PK, maxSpendUsd: 5 }).maxSpendUsd).toBe(5);
   });
 });
+
+describe("spend-cap boundary pins (runtime guards)", () => {
+  it("per-op cap: spend exactly AT cap is allowed, not rejected", async () => {
+    const challenge = btoa(
+      JSON.stringify({
+        x402Version: 2,
+        accepts: [
+          {
+            scheme: "exact",
+            network: "eip155:8453",
+            amount: "5000000", // $5.00 in atomic USDC
+            asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            payTo: "0x0000000000000000000000000000000000000001",
+            maxTimeoutSeconds: 600,
+            extra: { name: "USDC", version: "2" },
+          },
+        ],
+      }),
+    );
+    let n = 0;
+    vi.stubGlobal("fetch", async () => {
+      n++;
+      if (n === 1)
+        return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": challenge } });
+      return new Response(JSON.stringify({ credits_added: 5000, balance: 5000 }), { status: 200 });
+    });
+    // maxSpendUsd: 5 with a $5 deposit should succeed (at-cap, not rejected)
+    const kv = new AgentKV({ privateKey: PK, endpoint: EP, maxSpendUsd: 5 });
+    const r = await kv.deposit(5);
+    expect(r.balance).toBe(5000);
+  });
+
+  it("session cap: cumulative spend exactly AT cap across two ops is allowed", async () => {
+    const challenge = btoa(
+      JSON.stringify({
+        x402Version: 2,
+        accepts: [
+          {
+            scheme: "exact",
+            network: "eip155:8453",
+            amount: "5000000", // $5.00 in atomic USDC
+            asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            payTo: "0x0000000000000000000000000000000000000001",
+            maxTimeoutSeconds: 600,
+            extra: { name: "USDC", version: "2" },
+          },
+        ],
+      }),
+    );
+    let fetchCount = 0;
+    vi.stubGlobal("fetch", async () => {
+      fetchCount++;
+      // Odd calls: 402 challenge; even calls: 200 success
+      if (fetchCount % 2 === 1)
+        return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": challenge } });
+      return new Response(JSON.stringify({ credits_added: 5000, balance: 5000 }), { status: 200 });
+    });
+
+    const kv = new AgentKV({ privateKey: PK, endpoint: EP, maxSessionSpendUsd: 10 });
+
+    // First $5 deposit: succeeds, session spend = 5
+    const r1 = await kv.deposit(5);
+    expect(r1.balance).toBe(5000);
+
+    // Second $5 deposit: 5 + 5 = 10 (exactly at cap) → should succeed, not reject
+    fetchCount = 0;
+    const r2 = await kv.deposit(5);
+    expect(r2.balance).toBe(5000);
+
+    // Third $5 deposit: 10 + 5 = 15 > 10 → now throws
+    const fetchCountBefore = fetchCount;
+    await expect(kv.deposit(5)).rejects.toBeInstanceOf(SpendCapError);
+    expect(fetchCount).toBe(fetchCountBefore);
+  });
+
+  it("built-in ceiling: uncapped client with server-quoted price EXACTLY at $0.05 is allowed", async () => {
+    const challenge = btoa(
+      JSON.stringify({
+        x402Version: 2,
+        accepts: [
+          {
+            scheme: "exact",
+            network: "eip155:8453",
+            amount: "50000", // exactly $0.05 in atomic USDC (50,000 units)
+            asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            payTo: "0x0000000000000000000000000000000000000001",
+            maxTimeoutSeconds: 600,
+            extra: { name: "USDC", version: "2" },
+          },
+        ],
+      }),
+    );
+    let n = 0;
+    vi.stubGlobal("fetch", async () => {
+      n++;
+      if (n === 1)
+        return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": challenge } });
+      // Success response for set: just return a basic result
+      return new Response(JSON.stringify({ version: 1 }), { status: 200 });
+    });
+
+    // Uncapped client (no maxSpendUsd): should accept the $0.05 ceiling
+    const kv = new AgentKV({ privateKey: PK, endpoint: EP });
+    await kv.set("test-key", "test-value");
+    // We're just verifying the op succeeded (no SpendCapError thrown at ceiling check)
+    expect(n).toBe(2); // 402 then 200 succeeded
+  });
+
+  it("built-in ceiling: uncapped client rejects server-quoted price above $0.05", async () => {
+    const challenge = btoa(
+      JSON.stringify({
+        x402Version: 2,
+        accepts: [
+          {
+            scheme: "exact",
+            network: "eip155:8453",
+            amount: "51000", // $0.051 in atomic USDC (just above ceiling)
+            asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            payTo: "0x0000000000000000000000000000000000000001",
+            maxTimeoutSeconds: 600,
+            extra: { name: "USDC", version: "2" },
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", async () => {
+      return new Response("{}", { status: 402, headers: { "PAYMENT-REQUIRED": challenge } });
+    });
+
+    const kv = new AgentKV({ privateKey: PK, endpoint: EP });
+    await expect(kv.set("test-key", "test-value")).rejects.toBeInstanceOf(SpendCapError);
+  });
+});
