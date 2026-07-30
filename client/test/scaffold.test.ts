@@ -3,6 +3,6 @@ import { VERSION } from "../src/index.js";
 
 describe("@agentkv/client scaffold", () => {
   it("exports VERSION", () => {
-    expect(VERSION).toBe("0.3.0-rc.1");
+    expect(VERSION).toBe("0.3.0");
   });
 });
