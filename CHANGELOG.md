@@ -6,6 +6,10 @@ All notable changes to AgentKV are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0-rc.1] — 2026-07-30
+
+> Prerelease. Published to npm under the `next` dist-tag; `latest` still serves 0.2.2.
+
 ### Added
 
 - **`@agentkv/cli`**: `agentkv deposit` now accepts fractional USD amounts that resolve to a
@@ -135,7 +139,8 @@ All notable changes to AgentKV are documented here. The format follows
   resolve it through their own tree regardless. No runtime behavior change in either
   published package.
 
-[Unreleased]: https://github.com/agentx402-ai/agentkv/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/agentx402-ai/agentkv/compare/v0.3.0-rc.1...HEAD
+[0.3.0-rc.1]: https://github.com/agentx402-ai/agentkv/releases/tag/v0.3.0-rc.1
 
 ## [0.2.2] — 2026-07-28
 
