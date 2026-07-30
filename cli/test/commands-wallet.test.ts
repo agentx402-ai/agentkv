@@ -175,7 +175,10 @@ describe("runCli unknown command", () => {
     const out: string[] = [];
     const code = await runCli(["--version"], { stdout: (s) => out.push(s), stderr: () => {} });
     expect(code).toBe(0);
-    expect(out.join("").trim()).toMatch(/^\d+\.\d+\.\d+$/);
+    // Full semver, not just three numbers: a prerelease (0.3.0-rc.1) and build metadata are
+    // valid versions this CLI can legitimately report, and the narrower pattern failed the
+    // first time one was cut.
+    expect(out.join("").trim()).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/);
   });
 
   it("rejects an unknown flag with EXIT.USAGE (fail-closed, not silently swallowed)", async () => {
