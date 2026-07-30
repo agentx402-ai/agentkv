@@ -6,6 +6,15 @@ All notable changes to AgentKV are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`@agentkv/cli`**: the `@modelcontextprotocol/sdk` dependency floor rises from `^1.0.0` to
+  `^1.30.0`. 0.3.0 kept the range wide on the reasoning that consumers resolve the SDK through
+  their own tree, which is true — but it also let an install resolve a 1.x carrying the
+  `serve-static` advisory that 1.30.0 clears. The advisory remains unreachable from this CLI
+  (`agentkv mcp` is stdio-only), so this is hygiene rather than a fix, and it aligns the floor
+  with the sibling `@agentscout/cli`, which had drifted to the stricter range.
+
 ## [0.3.0] — 2026-07-30
 
 > Previewed as `0.3.0-rc.1` under the `next` dist-tag before this release; the contents are identical.
