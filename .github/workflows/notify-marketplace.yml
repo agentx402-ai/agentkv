@@ -2,10 +2,19 @@ name: Notify marketplace of release
 
 # On a published GitHub Release (or a manual run), dispatch to agentx402-ai/claude-plugins
 # so it pins the agentkv plugin's marketplace source.ref to the release tag (zero-touch
-# release sync). Requires the MARKETPLACE_DISPATCH_TOKEN secret: a fine-grained PAT owned by
-# the persona bot, scoped to claude-plugins with Contents: write. The release trigger fires
-# only for real Releases, not a plain `git push --tags`; workflow_dispatch is for testing /
-# re-syncing a specific tag by hand.
+# release sync). The release trigger fires only for real Releases, not a plain
+# `git push --tags`; workflow_dispatch is for testing / re-syncing a specific tag by hand.
+#
+# CREDENTIAL: a GitHub App installation token, minted per run from RELEASE_APP_ID /
+# RELEASE_APP_PRIVATE_KEY. Two reasons this is not the built-in GITHUB_TOKEN:
+#   1. GITHUB_TOKEN is scoped to THIS repo and cannot dispatch to claude-plugins at all.
+#   2. Events raised with GITHUB_TOKEN deliberately do NOT trigger further workflow runs, so
+#      the dispatch would land silently and sync-release.yml over there would never fire —
+#      the release would look green while the marketplace pin quietly stayed stale.
+# An App token has neither limitation and, unlike the long-lived PAT it replaces, expires in
+# an hour and is scoped below to one repository and one permission. If the App is ever
+# uninstalled from claude-plugins the mint step fails loudly here, rather than the dispatch
+# silently no-op'ing.
 
 on:
   release:
@@ -22,9 +31,22 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
+      # Scope the token twice over: to the one repository it must reach, and to the one
+      # permission the dispatch API needs. Without this an installation covering several
+      # repos would mint a token carrying write access to all of them into this job.
+      - name: Mint a scoped installation token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: claude-plugins
+          permission-contents: write
+
       - name: Trigger marketplace sync
         env:
-          GH_TOKEN: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_REF: ${{ github.event.inputs.ref }}
         run: |
