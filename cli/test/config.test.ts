@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentKVError } from "@agentkv/client";
 import { describe, expect, it } from "vitest";
-import { clientFromConfig, resolveConfig } from "../src/config";
+import { clientFromConfig, readConfigFile, resolveConfig } from "../src/config";
 
 describe("resolveConfig", () => {
   it("defaults endpoint to the hosted service when none is provided", () => {
@@ -57,6 +61,63 @@ describe("resolveConfig", () => {
   it("whitespace-only AGENTKV_MAX_SPEND_USD -> undefined (no cap), never Number(' ')===0", () => {
     const cfg = resolveConfig({}, { AGENTKV_ENDPOINT: "https://e", AGENTKV_MAX_SPEND_USD: "   " });
     expect(cfg.maxSpendUsd).toBeUndefined(); // a $0 cap would block every paid op
+  });
+
+  it.each([["0,05"], [Number.NaN], [-5], [true], [null]] as unknown[][])(
+    "malformed config.json maxSpendUsd (%s) throws — the file is not an unvalidated cap source",
+    (bad) => {
+      expect(() => resolveConfig({}, {}, () => ({ maxSpendUsd: bad }) as never)).toThrow(
+        /maxSpendUsd/,
+      );
+    },
+  );
+
+  it("malformed config.json maxSpendUsd throws AgentKVError with invalid_config code", () => {
+    try {
+      resolveConfig({}, {}, () => ({ maxSpendUsd: "0,05" }) as never);
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(AgentKVError);
+      expect((e as AgentKVError).code).toBe("invalid_config");
+    }
+  });
+
+  it("a valid file cap is still honored when no flag or env cap is set", () => {
+    expect(resolveConfig({}, {}, () => ({ maxSpendUsd: 0.05 })).maxSpendUsd).toBe(0.05);
+  });
+
+  it("a zero file cap is still honored (not confused with unset/falsy)", () => {
+    expect(resolveConfig({}, {}, () => ({ maxSpendUsd: 0 })).maxSpendUsd).toBe(0);
+  });
+
+  it("malformed config.json cap throws even when shadowed by a flag", () => {
+    expect(() =>
+      resolveConfig({ maxSpendUsd: 5 }, {}, () => ({ maxSpendUsd: "0,05" }) as never),
+    ).toThrow(/maxSpendUsd/);
+  });
+
+  it("malformed config.json cap throws even when shadowed by an env var", () => {
+    expect(() =>
+      resolveConfig({}, { AGENTKV_MAX_SPEND_USD: "5" }, () => ({ maxSpendUsd: NaN }) as never),
+    ).toThrow(/maxSpendUsd/);
+  });
+
+  it("rejects a non-string endpoint in config.json instead of passing it through", () => {
+    expect(() => resolveConfig({}, {}, () => ({ endpoint: 42 }) as never)).toThrow(/endpoint/);
+  });
+
+  it("rejects an empty-string endpoint in config.json", () => {
+    expect(() => resolveConfig({}, {}, () => ({ endpoint: "" }) as never)).toThrow(/endpoint/);
+  });
+
+  it("rejects a malformed endpoint with AgentKVError and invalid_config code", () => {
+    try {
+      resolveConfig({}, {}, () => ({ endpoint: 42 }) as never);
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(AgentKVError);
+      expect((e as AgentKVError).code).toBe("invalid_config");
+    }
   });
 
   it("wires maxSessionSpendUsd ONLY from AGENTKV_MAX_SESSION_SPEND_USD (decoupled from per-op)", () => {
@@ -260,5 +321,40 @@ describe("AGENTKV_BOOTSTRAP (pay-per-call bootstrap opt-in)", () => {
     expect(() => clientFromConfig(cfg, { env: walletEnv as NodeJS.ProcessEnv })).toThrow(
       /account-key/,
     );
+  });
+});
+
+describe("readConfigFile", () => {
+  it("a present-but-corrupt config.json throws instead of silently reverting to defaults", () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      writeFileSync(join(home, "config.json"), "{not json");
+      expect(() => readConfigFile({ AGENTKV_HOME: home })).toThrow(/config.json/);
+      // The danger this closes: silently treating it as absent retargets the endpoint to
+      // production AND drops a persisted spend cap, with no warning.
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a JSON scalar / array config.json is rejected as not an object", () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      for (const bad of ["null", "42", "[]"]) {
+        writeFileSync(join(home, "config.json"), bad);
+        expect(() => readConfigFile({ AGENTKV_HOME: home })).toThrow(/config.json/);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a missing config.json is still simply absent (null)", () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-cfg-"));
+    try {
+      expect(readConfigFile({ AGENTKV_HOME: home })).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

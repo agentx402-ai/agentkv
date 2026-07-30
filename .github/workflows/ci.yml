@@ -45,7 +45,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [20, 22]
+        # 24 = publish.yml's runtime (needed there for native npm OIDC): releases must
+        # ship from a Node the matrix actually tests.
+        node: [20, 22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -118,25 +120,6 @@ jobs:
       - run: npm run build
       - run: npm pack --dry-run --workspaces
 
-  no-internal-refs:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Fail on private/internal references in tracked files
-        run: |
-          # Keep the public tree free of the private backend repo name and its
-          # internal file paths. This workflow file is excluded because it
-          # necessarily names the patterns it searches for.
-          if git grep -nIE 'agentkv-worker|worker/(src|test)/' -- ':!.github/workflows/ci.yml'; then
-            echo "::error::internal/private reference found in a tracked file (see matches above)"
-            exit 1
-          fi
-          echo "ok: no internal references in tracked files"
-
   versions:
     runs-on: ubuntu-latest
     permissions:
@@ -148,29 +131,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22"
-      # publish.yml runs this same check against the release TAG, so a mismatch is caught
-      # again at the one moment it becomes irreversible.
-      - name: All five version sources + the cli→client dep must match (RELEASING.md)
-        run: |
-          node -e '
-            const fs = require("fs");
-            const read = (p) => fs.readFileSync(p, "utf8");
-            const ver = (p) => JSON.parse(read(p)).version;
-            const konst = (p) => (read(p).match(/VERSION = "([^"]+)"/) || [])[1];
-            const v = {
-              clientPkg: ver("client/package.json"),
-              cliPkg: ver("cli/package.json"),
-              clientConst: konst("client/src/index.ts"),
-              cliConst: konst("cli/src/version.ts"),
-              plugin: ver("plugin/agentkv/.claude-plugin/plugin.json"),
-            };
-            const uniq = [...new Set(Object.values(v))];
-            if (uniq.length !== 1 || uniq[0] === undefined) {
-              console.error("::error::version sources diverge:", JSON.stringify(v)); process.exit(1);
-            }
-            const dep = JSON.parse(read("cli/package.json")).dependencies["@agentkv/client"];
-            if (dep !== "^" + v.clientPkg) {
-              console.error(`::error::cli dependency on @agentkv/client (${dep}) != ^${v.clientPkg}`); process.exit(1);
-            }
-            console.log("ok: all 5 version sources + cli->client dep at " + uniq[0]);
-          '
+      # publish.yml runs its own equivalent check against the release TAG, so a mismatch is
+      # caught again at the one moment it becomes irreversible.
+      - name: All version sources + the cli→client dep must match (RELEASING.md)
+        run: node scripts/check-versions.mjs

@@ -67,21 +67,43 @@ type FileReader = () => ConfigFile | null;
 
 /**
  * Read the on-disk config file (`<AGENTKV_HOME|~/.agentkv>/config.json`) written by
- * `agentkv config`, tolerating absence / bad JSON / permission errors by returning null.
- * This is the DEFAULT FileReader used by every production caller of resolveConfig — without
- * it, `agentkv config` was write-only: everything it persisted (endpoint, spend cap) was
- * silently ignored, so a user who ran `agentkv config --endpoint http://localhost:8787`
- * still hit the production default and paid real USDC there.
+ * `agentkv config`. A missing file returns null (the documented default); any other failure
+ * throws `invalid_config` to fail loud. A truncated file (which a non-atomic write + crash
+ * produces) is caught and throws, not silently reverted to defaults — which would retarget
+ * the endpoint to production and drop a persisted spend cap.
  */
 export function readConfigFile(env: Env = process.env): ConfigFile | null {
+  const file = join(agentkvDir(env as NodeJS.ProcessEnv), "config.json");
+  let raw: string;
   try {
-    const parsed = JSON.parse(
-      readFileSync(join(agentkvDir(env as NodeJS.ProcessEnv), "config.json"), "utf8"),
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    // Missing file = no file config (the documented default). Anything else (EACCES,
+    // EISDIR) means a config EXISTS but can't be used — fail loud rather than silently
+    // reverting the endpoint to production and dropping a persisted spend cap.
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw new AgentKVError(
+      `config file ${file} exists but could not be read: ${e instanceof Error ? e.message : String(e)}`,
+      "invalid_config",
+      0,
     );
-    return parsed && typeof parsed === "object" ? (parsed as ConfigFile) : null;
-  } catch {
-    return null; // ENOENT / invalid JSON / EACCES -> no file config
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // A truncated file (what a non-atomic write + crash produces) landed here and was
+    // treated as absent — symmetric with the deliberately-throwing corrupt account.json.
+    throw new AgentKVError(
+      `config file ${file} is not valid JSON — fix or remove it`,
+      "invalid_config",
+      0,
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new AgentKVError(`config file ${file} must contain a JSON object`, "invalid_config", 0);
+  }
+  return parsed as ConfigFile;
 }
 
 export function resolveConfig(
@@ -98,16 +120,21 @@ export function resolveConfig(
   // cap that refuses every paid op, and an empty AGENTKV_NETWORK would blank the default.
   // Defaults to the hosted service so users of the one hosted endpoint don't have to set
   // it; override via --endpoint / AGENTKV_ENDPOINT / config when needed.
-  const endpoint =
-    flags.endpoint ?? envStr(env.AGENTKV_ENDPOINT) ?? file.endpoint ?? DEFAULT_ENDPOINT;
+  const fileEndpoint = strOrThrowVal(file.endpoint, "config.json endpoint");
+  const fileNetwork = strOrThrowVal(file.network, "config.json network");
+  const fileOnrampProvider = strOrThrowVal(file.onrampProvider, "config.json onrampProvider");
+  const fileOnrampAppId = strOrThrowVal(file.onrampAppId, "config.json onrampAppId");
+  // A malformed persisted cap is a config error even when shadowed — it would otherwise
+  // silently become the active cap the moment the flag is dropped. Validate it unconditionally.
+  const fileMaxSpendUsd = numOrThrowVal(file.maxSpendUsd, "config.json maxSpendUsd");
   return {
-    endpoint,
-    network: flags.network ?? envStr(env.AGENTKV_NETWORK) ?? file.network ?? "eip155:8453",
+    endpoint: flags.endpoint ?? envStr(env.AGENTKV_ENDPOINT) ?? fileEndpoint ?? DEFAULT_ENDPOINT,
+    network: flags.network ?? envStr(env.AGENTKV_NETWORK) ?? fileNetwork ?? "eip155:8453",
     // Per-operation cap (throws on a single op above this).
     maxSpendUsd:
       flags.maxSpendUsd ??
       numOrThrow(env.AGENTKV_MAX_SPEND_USD, "AGENTKV_MAX_SPEND_USD") ??
-      file.maxSpendUsd,
+      fileMaxSpendUsd,
     // Cumulative, instance-lifetime cap — env-only, opt-in. Kept SEPARATE from the
     // per-op cap: the MCP server is one long-lived client, so coupling them would turn
     // a per-op ceiling into a lifetime budget that eventually blocks every op.
@@ -125,13 +152,13 @@ export function resolveConfig(
     onrampProvider:
       flags.onrampProvider ??
       envStr(env.AGENTKV_ONRAMP_PROVIDER) ??
-      file.onrampProvider ??
+      fileOnrampProvider ??
       "coinbase",
     // Provider config bag. Currently just Coinbase's appId; new keys go here without
     // changing the command. appId is non-secret (a public CDP project id) so it may come
     // from flag/env/file.
     onrampConfig: {
-      appId: flags.onrampAppId ?? envStr(env.AGENTKV_ONRAMP_APP_ID) ?? file.onrampAppId,
+      appId: flags.onrampAppId ?? envStr(env.AGENTKV_ONRAMP_APP_ID) ?? fileOnrampAppId,
     },
     // Account-key auto top-off: env-only. Validated at client construction
     // (clientFromConfig), where the auth mode is known.
@@ -188,6 +215,33 @@ function numOrThrow(s: string | undefined, name: string): number | undefined {
     throw new Error(`${name} must be a non-negative number (got ${JSON.stringify(v)})`);
   }
   return n;
+}
+
+/**
+ * The already-parsed (config.json) counterpart of numOrThrow. The file was the ONE cap
+ * source that skipped validation — flags fail closed in parseFlags, env in numOrThrow —
+ * so a hand-edited or externally written `"0,05"` reached the SDK as NaN and silently
+ * disabled the per-op cap AND the built-in op ceiling.
+ */
+function numOrThrowVal(v: unknown, name: string): number | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+    throw new AgentKVError(
+      `${name} must be a non-negative number (got ${JSON.stringify(v)})`,
+      "invalid_config",
+      0,
+    );
+  }
+  return v;
+}
+
+/** Type-check a string field from config.json (a wrong-typed value would flow on silently). */
+function strOrThrowVal(v: unknown, name: string): string | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== "string" || v.trim() === "") {
+    throw new AgentKVError(`${name} must be a non-empty string`, "invalid_config", 0);
+  }
+  return v.trim();
 }
 
 function privateKeySigner(pk: `0x${string}`) {

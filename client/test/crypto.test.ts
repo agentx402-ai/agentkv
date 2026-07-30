@@ -10,6 +10,7 @@ import {
   hashKey,
   normalizeEncryptionKey,
 } from "../src/crypto";
+import { AgentKVError } from "../src/types";
 
 const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 
@@ -19,6 +20,15 @@ describe("crypto key derivation", () => {
     expect(normalizeEncryptionKey(hex).length).toBe(32);
     expect(normalizeEncryptionKey(new Uint8Array(32)).length).toBe(32);
     expect(() => normalizeEncryptionKey(new Uint8Array(16))).toThrow(/32 bytes/);
+  });
+
+  it("copies the caller's key bytes: zeroizing the source buffer after construction is safe", async () => {
+    // Zeroizing key material after handing it over is good hygiene — aliasing the caller's
+    // buffer silently re-derived every key from zeros instead.
+    const source = new Uint8Array(32).fill(9);
+    const normalized = normalizeEncryptionKey(source);
+    source.fill(0);
+    expect(Array.from(normalized)).toEqual(Array.from(new Uint8Array(32).fill(9)));
   });
 });
 
@@ -97,5 +107,49 @@ describe("hashKey — blind index digest", () => {
     expect(hashKey(mac, "Key")).not.toBe(hashKey(mac, "key"));
     const otherMac = deriveKeyMaterial(new Uint8Array(32).fill(1)).mac;
     expect(hashKey(otherMac, "x")).not.toBe(hashKey(mac, "x"));
+  });
+});
+
+describe("blind-index golden vectors (frozen wire format)", () => {
+  const MAC = new Uint8Array(32).fill(7);
+
+  // These digests are the SERVER-VISIBLE addresses of stored values. Changing the
+  // normalization, the scheme tag, the HMAC input, or the base64url alphabet orphans
+  // already-stored data with no error — reads simply return null. Pin the exact strings.
+  it.each([
+    ["session", "AaIBTyUir0KpKocv1FyLNoPbmYf-Is06f6twUDuORtY2"],
+    ["café", "ASdH9_l00iBrk_YN6AajHNh15V1J5JwyFRfH8etnJgzJ"], // NFC-composed
+    ["ключ", "AZwdzfVVwSQcUAIhIsGSBg_Jj22IO2CSqb_ttHlFIUXZ"],
+    ["🔐", "AQhTQp5TqYCSVebXaRtkXxsAYXJlw8MOEUvkpqfOqwPc"],
+  ])("hashKey(mac, %s) is frozen", (name, digest) => {
+    expect(hashKey(MAC, name)).toBe(digest);
+  });
+
+  it("an NFD-decomposed name lands on the same frozen digest as its NFC form", () => {
+    // "cafe" + \u0301 (combining acute) via a JS escape, NOT a raw literal byte and NOT
+    // the precomposed U+00E9 — an escape so an NFC-normalizing editor/tool cannot silently
+    // collapse this into a duplicate of the NFC-composed case above with no test failure.
+    expect(hashKey(MAC, "cafe\u0301")).toBe("ASdH9_l00iBrk_YN6AajHNh15V1J5JwyFRfH8etnJgzJ");
+  });
+
+  it("pins the scheme tag as a literal, not as a self-referential import", () => {
+    expect(DIGEST_SCHEME_V1).toBe(0x01);
+  });
+});
+
+describe("decrypt error taxonomy", () => {
+  it("all decrypt failures are AgentKVError with code decrypt_failed", async () => {
+    const good = await encrypt(KEY, "x");
+    const wrongKey = new Uint8Array(32).fill(9);
+    const cases: Array<[string, Uint8Array]> = [
+      ["!!!not base64!!!", KEY], // atob failure — today a cryptic DOMException "Invalid character"
+      [bytesToB64(new Uint8Array([1, 2, 3])), KEY], // no magic / truncated envelope
+      [good, wrongKey], // auth-tag failure
+    ];
+    for (const [packed, key] of cases) {
+      const err = await decrypt(key, packed).catch((e) => e);
+      expect(err).toBeInstanceOf(AgentKVError);
+      expect((err as AgentKVError).code).toBe("decrypt_failed");
+    }
   });
 });

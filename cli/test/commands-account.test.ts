@@ -371,6 +371,8 @@ describe("account fund", () => {
   // A fixed payer wallet (deliberately separate from the configured account).
   const PAYER = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
   const PAYER_ADDR = privateKeyToAccount(PAYER as `0x${string}`).address;
+  // Another fixed payer for ambient/env tests (never --from-key) — constructed, not hand-typed.
+  const AMBIENT = `0x${"c".repeat(64)}` as const;
   const AK = `ak_${"a".repeat(64)}`;
   const ENC = `0x${"b".repeat(64)}`;
 
@@ -571,6 +573,100 @@ describe("account fund", () => {
         expect(io.errJson().code).toBe("usage");
       }
       expect(fundAccount).not.toHaveBeenCalled();
+    } finally {
+      clean(env);
+    }
+  });
+
+  it("account fund refuses to spend above the configured per-op cap", async () => {
+    const client = { fundAccount: vi.fn() };
+    const err: string[] = [];
+    const env = tmpEnv({
+      AGENTKV_ACCOUNT_KEY: AK,
+      AGENTKV_ENCRYPTION_KEY: ENC,
+      AGENTKV_MAX_SPEND_USD: "5",
+    });
+    try {
+      const code = await runCli(["account", "fund", "50", "--from-key", PAYER], {
+        client: client as never,
+        env,
+        stdout: () => {},
+        stderr: (s) => err.push(s),
+      });
+      expect(code).not.toBe(0);
+      expect(client.fundAccount).not.toHaveBeenCalled();
+      expect(err.join("")).toMatch(/cap/);
+    } finally {
+      clean(env);
+    }
+  });
+
+  it("account fund within the cap still proceeds", async () => {
+    const client = { fundAccount: vi.fn(async () => ({ credits_added: 5000, balance: 5000 })) };
+    const out: string[] = [];
+    const err: string[] = [];
+    const env = tmpEnv({
+      AGENTKV_ACCOUNT_KEY: AK,
+      AGENTKV_ENCRYPTION_KEY: ENC,
+      AGENTKV_MAX_SPEND_USD: "5",
+    });
+    try {
+      const code = await runCli(["account", "fund", "5", "--from-key", PAYER], {
+        client: client as never,
+        env,
+        stdout: (s) => out.push(s),
+        stderr: (s) => err.push(s),
+      });
+      expect(code).toBe(0);
+      expect(client.fundAccount).toHaveBeenCalledOnce();
+      expect(err).toHaveLength(0);
+    } finally {
+      clean(env);
+    }
+  });
+
+  it("account fund refuses to spend above the configured session cap", async () => {
+    const client = { fundAccount: vi.fn() };
+    const err: string[] = [];
+    const env = tmpEnv({
+      AGENTKV_ACCOUNT_KEY: AK,
+      AGENTKV_ENCRYPTION_KEY: ENC,
+      AGENTKV_MAX_SESSION_SPEND_USD: "5",
+    });
+    try {
+      const code = await runCli(["account", "fund", "50", "--from-key", PAYER], {
+        client: client as never,
+        env,
+        stdout: () => {},
+        stderr: (s) => err.push(s),
+      });
+      expect(code).not.toBe(0);
+      expect(client.fundAccount).not.toHaveBeenCalled();
+      expect(err.join("")).toMatch(/session cap/);
+    } finally {
+      clean(env);
+    }
+  });
+
+  it("account fund rejects an extra positional (a payer key typed without --from-key)", async () => {
+    const client = { fundAccount: vi.fn() };
+    const err: string[] = [];
+    const env = tmpEnv({
+      AGENTKV_ACCOUNT_KEY: AK,
+      AGENTKV_ENCRYPTION_KEY: ENC,
+      AGENTKV_PAYER_KEY: AMBIENT,
+    });
+    try {
+      const code = await runCli(["account", "fund", "5", PAYER], {
+        client: client as never,
+        env,
+        stdout: () => {},
+        stderr: (s) => err.push(s),
+      });
+      expect(code).not.toBe(0);
+      expect(client.fundAccount).not.toHaveBeenCalled();
+      expect(err.join("")).toMatch(/--from-key/);
+      expect(err.join("")).not.toContain(PAYER); // never echo key material
     } finally {
       clean(env);
     }

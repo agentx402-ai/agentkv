@@ -5,6 +5,7 @@ import { z } from "zod";
 import { clientFromConfig, readConfigFile, resolveConfig } from "./config.js";
 import { peekStoredAccount } from "./keystore.js";
 import { getOnrampProvider } from "./onramp.js";
+import type { Writer } from "./output.js";
 import {
   forbiddenEnvKey,
   readEnvSecret,
@@ -49,9 +50,10 @@ export function buildMcpServer(
     network: string;
     config: Record<string, string | undefined>;
   },
-  // Account-key mode has NO wallet address — client.address is the zero-address SENTINEL.
-  // When true, agentkv_fund REFUSES (a card purchase to the sentinel would burn real USDC)
-  // and agentkv_wallet_address reports account-key mode instead of the misleading sentinel.
+  // Account-key mode has NO wallet address — client.address is undefined (no sentinel; see
+  // the docblock on AgentKV#address in client/src/index.ts). When true, agentkv_fund REFUSES
+  // (there is no real address to send a card purchase to) and agentkv_wallet_address reports
+  // account-key mode instead of the raw undefined.
   accountMode = false,
 ): McpServer {
   const server = new McpServer({ name: "agentkv", version: VERSION });
@@ -113,7 +115,27 @@ export function buildMcpServer(
           "Stable key making a retried read exactly-once — reuse the same value across retries so the server dedupes instead of double-charging",
         ),
     },
-    { title: "Get value", readOnlyHint: true, openWorldHint: true },
+    // NOT read-only: a get is a PAID op (credits, or real USDC settled on-chain per call
+    // under AGENTKV_INLINE=awal). Hosts use these annotations to decide when to prompt a
+    // human before spending, so an auto-approving host must not be told this is free.
+    // NOT destructive: a read never modifies stored data. destructiveHint defaults to TRUE
+    // (per the MCP spec) when omitted, so this must be set explicitly — matching the sibling
+    // agentkv_get_to_file.
+    // NOT idempotent either: idempotency_key is OPTIONAL, and idempotentHint means "repeating
+    // the SAME ARGUMENTS has no additional effect". When the caller omits the key (the default
+    // call shape), client.get() mints a fresh random nonce per call, so two calls with
+    // identical tool arguments are billed separately (see client/src/index.ts: "Two SEPARATE
+    // get()s still use distinct keys — separately charged"). Only reusing an explicit
+    // idempotency_key across a retry dedupes server-side — a narrower guarantee than this
+    // boolean can express, so it stays false, matching the sibling read tools
+    // agentkv_get_to_file and agentkv_run_with_secret (same client.get(), same optional key).
+    {
+      title: "Get value",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     async (args) => ({
       content: [
         {
@@ -198,7 +220,7 @@ export function buildMcpServer(
       content: [
         {
           type: "text" as const,
-          // Account-key mode has no wallet; client.address is the zero-address sentinel, so
+          // Account-key mode has no wallet; client.address is undefined (no sentinel), so
           // returning it verbatim would misrepresent identity. Report account-key mode instead.
           text: JSON.stringify(
             accountMode
@@ -225,10 +247,10 @@ export function buildMcpServer(
     },
     { title: "Fund via onramp", readOnlyHint: true, openWorldHint: true },
     async (args) => {
-      // Account-key mode has no single wallet to onramp into — client.address is the
-      // zero-address sentinel, so a completed card purchase would send real USDC to the
-      // burn address, permanently lost. Refuse and explain how account credits are funded
-      // (mirrors the CLI's runFund). This check MUST come first (before onramp/config).
+      // Account-key mode has no single wallet to onramp into — client.address is undefined
+      // (no sentinel), so there is no real address to send a completed card purchase to.
+      // Refuse and explain how account credits are funded (mirrors the CLI's runFund). This
+      // check MUST come first (before onramp/config).
       if (accountMode) {
         return toolError(
           "Account-key mode has no single wallet to onramp into. Account credits are funded by " +
@@ -477,10 +499,25 @@ export function buildMcpServer(
 }
 
 export async function startMcp(
-  deps: { env?: NodeJS.ProcessEnv; client?: Parameters<typeof buildMcpServer>[0] } = {},
+  deps: {
+    env?: NodeJS.ProcessEnv;
+    client?: Parameters<typeof buildMcpServer>[0];
+    /** Injected so tests can capture it; defaults to real stderr (never stdout — see below). */
+    stderr?: Writer;
+  } = {},
 ): Promise<void> {
   const env = deps.env ?? process.env;
+  const stderr = deps.stderr ?? ((s: string) => process.stderr.write(s));
   const cfg = resolveConfig({}, env, () => readConfigFile(env));
+  // Visibility, not a default cap: an unbudgeted long-lived server can spend without a
+  // cumulative bound, and agentkv_deposit is exempt from the built-in per-op ceiling. Say
+  // so once at startup rather than changing anyone's spend behavior silently.
+  if (cfg.maxSessionSpendUsd === undefined) {
+    stderr(
+      "agentkv mcp: no session spend cap configured — this server can spend without a " +
+        "cumulative bound. Set AGENTKV_MAX_SESSION_SPEND_USD (and AGENTKV_MAX_SPEND_USD) to bound it.\n",
+    );
+  }
   const client =
     deps.client ??
     clientFromConfig(cfg, {

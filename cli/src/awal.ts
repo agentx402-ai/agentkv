@@ -93,12 +93,19 @@ export function awalTopoffPayer(exec: AwalExec = defaultExec) {
 
     // Settlement confirmation: resolve ONLY on parseable JSON with no error field.
     // awal --json prints the result object as the last JSON document on stdout.
-    let out: { error?: unknown };
+    let out: { error?: unknown; success?: unknown };
     try {
       const jsonStart = stdout.indexOf("{");
       out = JSON.parse(stdout.slice(jsonStart === -1 ? stdout.length : jsonStart));
     } catch {
       throw new Error("awal top-off: could not confirm settlement (unparseable awal output)");
+    }
+    // awal collapses every failure (payment, insufficient balance, network, non-2xx) into
+    // `{success:false, error}` — but a payload with the flag and NO error field would
+    // otherwise confirm a deposit that never settled. awalInline already checks the flag;
+    // match it. Output with neither field stays accepted (older awal shapes).
+    if (out.success === false) {
+      throw new Error(`awal top-off failed: ${redact(String(out.error ?? "unknown awal error"))}`);
     }
     if (out.error) {
       throw new Error(`awal top-off failed: ${redact(String(out.error))}`);

@@ -102,6 +102,15 @@ export class CoinbaseOnramp implements OnrampProvider {
     // assets pins the buyable asset list to USDC (defaultAsset alone only pre-selects it).
     url.searchParams.set("assets", JSON.stringify(["USDC"]));
     if (opts.amountUsd !== undefined && Number.isFinite(opts.amountUsd) && opts.amountUsd > 0) {
+      // Number.prototype.toString switches to exponential notation at >= 1e21, and huge
+      // products accumulate float noise (1e21 -> "1.0000000000000001e+21") — garbage as a
+      // URL parameter. No onramp processes anywhere near $1e9; refuse beyond it so the
+      // cents math below stays in exact-integer float range and always prints decimal.
+      if (opts.amountUsd > 1_000_000_000) {
+        throw new Error(
+          `amount ${opts.amountUsd} exceeds the $1,000,000,000 onramp maximum; pass a smaller amount`,
+        );
+      }
       // Coinbase expects a plain number; round to 2 decimals (cents). A bare
       // `Math.round(n * 100)` mis-rounds common 2dp dollar values because they
       // aren't exactly representable in IEEE-754 (5.015*100 = 501.4999… → 5.01,

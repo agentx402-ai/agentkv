@@ -52,16 +52,22 @@ export function parseFlags(args: string[]): { flags: Record<string, any>; positi
       if (!boolish && (val === undefined || val === "" || (val as string).startsWith("--"))) {
         throw new UsageError(`flag --${key} requires a value`);
       }
-      if (key.endsWith("usd") || key === "ttl-days") {
+      if (key.endsWith("usd") || key === "ttl-days" || key === "limit") {
         // Numeric flags MUST be a finite, non-negative number — mirror the env path's
         // fail-CLOSED behavior (config.ts numOrThrow). Otherwise a typo like
         // `--max-spend-usd 0,05` -> NaN is non-nullish, so it wins over a valid env cap
         // AND `usd > NaN` is always false, silently DISABLING the spend cap on real funds
-        // (and `--ttl-days abc` -> NaN serializes as ttl_days:null, dropping retention).
+        // (and `--ttl-days abc` -> NaN serializes as ttl_days:null, dropping retention;
+        // `--limit abc` -> NaN reaches the wire as limit=NaN).
         const n = Number(val);
         if (!Number.isFinite(n) || n < 0) {
           throw new UsageError(
             `flag --${key} must be a non-negative number (got ${JSON.stringify(val)})`,
+          );
+        }
+        if (key === "limit" && (!Number.isInteger(n) || n < 1)) {
+          throw new UsageError(
+            `flag --limit must be a positive integer (got ${JSON.stringify(val)})`,
           );
         }
         flags[camel(key)] = n;

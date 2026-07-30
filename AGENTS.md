@@ -57,7 +57,12 @@ Client code here authorizes real USDC payments. Two invariants are load-bearing:
    regressions in `client/test/account-topoff.test.ts` (setter-trap window tests) pin
    it; if your change breaks one, the change is wrong, not the test.
 2. **Spend caps.** `maxSpendUsd` / `AGENTKV_MAX_SPEND_USD` must bound every path that
-   can spend, including payer-hook ceilings (`--max-amount` handed to the hook).
+   can spend, including payer-hook ceilings (`--max-amount` handed to the hook). A cap must
+   also fail closed on malformed input — a `NaN`/`Infinity`/negative/non-number value throws
+   `invalid_config` at construction and when read from `config.json`, never silently becomes
+   "unlimited" — and hold under concurrency: the session cap is enforced with a synchronous
+   reservation taken at check time, not a stale post-settlement counter, so concurrent spends
+   can't each pass the same check.
 
 Error-code strings (`account_not_provisioned`, `insufficient_credits`, …) and the
 x402/EIP-712 domain constants are pinned to the server's canon; parity tests here
@@ -66,13 +71,19 @@ service must change in lockstep.
 
 ## Versioning & release
 
-`RELEASING.md` is authoritative. Five version sources move in lockstep:
+`RELEASING.md` is authoritative. Six version sources move in lockstep:
 both `package.json`s, `client/src/index.ts` `VERSION`, `cli/src/version.ts` `VERSION`,
-`plugin/agentkv/.claude-plugin/plugin.json` — plus the marketplace pin synced on
-release. CI's `versions` job only cross-checks the two `package.json`s; update the
-rest by hand. Publishing happens via a GitHub Release → the `publish.yml` OIDC
-trusted-publishing workflow (client before cli — dependency order). Never
-`npm publish` from a laptop.
+`plugin/agentkv/.claude-plugin/plugin.json`, and `plugin/agentkv/.mcp.json`'s runtime pin —
+plus the marketplace pin synced on release. CI's `versions` job (`scripts/check-versions.mjs`)
+cross-checks all six sources — including the `.mcp.json` runtime pin — plus the cli→client
+dependency range, on every pull request. `publish.yml` does NOT call that script: it carries
+its own separate inline guard that re-checks the release tag against only five of the six
+sources (both `package.json`s, both `VERSION` consts, `plugin.json` — not `.mcp.json`), plus
+the cli→client dependency range, then a narrower re-check of just the two `package.json`s
+immediately before the `npm publish` steps. So the sixth source — the plugin's `.mcp.json`
+runtime pin — is enforced on pull requests but not by the release-time guard. Publishing
+happens via a GitHub Release → the `publish.yml` OIDC trusted-publishing workflow (client
+before cli — dependency order). Never `npm publish` from a laptop.
 
 ## Security
 

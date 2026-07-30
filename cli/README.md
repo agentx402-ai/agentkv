@@ -39,8 +39,9 @@ export AGENTKV_ACCOUNT_KEY=ak_...  AGENTKV_ENCRYPTION_KEY=0x...
 agentkv set mykey '{"hello":"world"}'
 ```
 
-Account-key mode is selected when an `account.json` exists (from `account new`) or
-`AGENTKV_ACCOUNT_KEY` is set; an explicit `AGENTKV_PRIVATE_KEY` keeps wallet mode.
+Account-key mode is selected when `AGENTKV_ACCOUNT_KEY` is set (it wins over everything,
+including an explicit `AGENTKV_PRIVATE_KEY`), or when an `account.json` exists and no
+`AGENTKV_PRIVATE_KEY` is set — an explicit wallet key beats the stored file, not the env key.
 
 Prefer not to fund it by hand every time? Set `AGENTKV_TOPOFF=awal` and the CLI tops itself
 off automatically instead — see `AGENTKV_TOPOFF` in Configuration below.
@@ -73,6 +74,11 @@ opt-in payer key for `agentkv account fund <usd> --from-key <0xhex>` (fund a dec
 from a wallet other than the configured one); prefer `AGENTKV_PAYER_KEY` to keep the key out of
 shell history / `ps` argv.
 
+Non-secret defaults set via `agentkv config` persist to `~/.agentkv/config.json`, which is read
+before it's rewritten, so a corrupted file can't be auto-repaired — `agentkv config` fails with
+`… is not valid JSON — fix or remove it`; fix or remove it by hand, then re-run `agentkv config`
+to persist your settings again.
+
 | Variable | Description |
 |----------|-------------|
 | `AGENTKV_PRIVATE_KEY` | Wallet key (hex). Unset → a local wallet is auto-provisioned on first use. |
@@ -89,6 +95,9 @@ shell history / `ps` argv.
 | `AGENTKV_PREPAY_TOPOFF` | Top-off amount (USD, >= 1). Default `1`. Requires `AGENTKV_TOPOFF`. |
 | `AGENTKV_INLINE` | Account-key inline pay-per-op payer. Only value: `awal` — pays each `/kv` op via `npx awal x402 pay` at request time, no prepaid credits required. Requires an authenticated, funded awal. If both `AGENTKV_TOPOFF` and `AGENTKV_INLINE` are set, top-off takes precedence per op. |
 | `AGENTKV_BOOTSTRAP` | Account-key only. `1`/`true` opts in to letting `AGENTKV_TOPOFF`/`AGENTKV_INLINE` pay the *first-ever* op on a brand-new, unfunded account (an `account_not_provisioned` 402), not just ordinary out-of-credit 402s. Auto-`true` when the key came from this CLI's own minted `account.json` (never from an env-supplied `AGENTKV_ACCOUNT_KEY`). Rejected in wallet mode. |
+
+For the long-lived `agentkv mcp` server, set **both** `AGENTKV_MAX_SPEND_USD` and
+`AGENTKV_MAX_SESSION_SPEND_USD` — see MCP server below.
 
 On the awal path `AGENTKV_PREPAY_TOPOFF` is passed only as a `--max-amount` ceiling — the
 worker's `/account/deposit` 402 quotes the actual amount minted (≥ $1 server minimum), capped at
@@ -109,6 +118,16 @@ In account-key mode (`AGENTKV_ACCOUNT_KEY` set, or a stored account with no `AGE
 the two wallet-funding tools — `agentkv_deposit` and `agentkv_fund` — refuse with a structured
 error, since a managed account has no wallet to deposit or buy USDC into; fund it by depositing to
 `<endpoint>/account/deposit` from a signing wallet instead.
+
+Because the MCP server is a long-lived process handling many calls over its lifetime, set
+**both** `AGENTKV_MAX_SPEND_USD` and `AGENTKV_MAX_SESSION_SPEND_USD` (see Configuration above) —
+a per-op cap alone still leaves cumulative spend across the session unbounded. This matters most
+for `agentkv_deposit`: unlike `agentkv_get`/`agentkv_set`, a deposit amount is caller-chosen
+rather than server-quoted, so it is not subject to the built-in per-op price ceiling that
+protects an unconfigured client from an inflated quote — without `AGENTKV_MAX_SPEND_USD`, the
+session cap is the only limit on how much a single `agentkv_deposit` call can spend. If
+`AGENTKV_MAX_SESSION_SPEND_USD` is unset, `agentkv mcp` prints a warning to stderr at startup —
+the check is on the session cap alone, so setting `AGENTKV_MAX_SPEND_USD` does not silence it.
 
 See the [monorepo README](https://github.com/agentx402-ai/agentkv#readme) for the SDK and the
 Claude plugin.

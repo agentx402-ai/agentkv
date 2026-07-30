@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentKVError, SpendCapError } from "@agentkv/client";
@@ -10,6 +10,7 @@ import { runKv, runListKeys } from "./commands/kv";
 import { runWallet } from "./commands/wallet";
 import { clientFromConfig, readConfigFile, resolveConfig } from "./config";
 import { agentkvDir } from "./keystore";
+import { getOnrampProvider } from "./onramp";
 import { EXIT, printError, printJson, type Writer } from "./output";
 import { VERSION } from "./version.js";
 
@@ -81,7 +82,7 @@ export async function runCli(argv: string[], deps: Deps = {}): Promise<number> {
       // Handle mcp BEFORE building a client — startMcp builds its own (with the stderr
       // notify). Building one here would do the config/keystore work twice and discard it.
       const { startMcp } = await import("./mcp.js");
-      await startMcp({ env: deps.env, client: deps.client });
+      await startMcp({ env: deps.env, client: deps.client, stderr: deps.stderr });
       return EXIT.OK;
     }
     // Only these commands need a client. Dispatch on cmd FIRST so an unknown/typo'd command
@@ -154,8 +155,33 @@ function runConfig(
   if (flags.endpoint) merged.endpoint = flags.endpoint;
   if (flags.network) merged.network = flags.network;
   if (flags.maxSpendUsd !== undefined) merged.maxSpendUsd = flags.maxSpendUsd;
+  if (flags.onrampProvider !== undefined) {
+    // Fail at config time, not at first `fund`: getOnrampProvider throws listing known ids.
+    getOnrampProvider(flags.onrampProvider);
+    merged.onrampProvider = flags.onrampProvider;
+  }
+  if (flags.onrampAppId !== undefined) merged.onrampAppId = flags.onrampAppId;
   const path = join(dir, "config.json");
-  writeFileSync(path, JSON.stringify(merged, null, 2));
+  // Atomic: write a sibling tmp then rename, so a crash mid-write can't leave a truncated
+  // config.json (which is exactly the corrupt-file case readConfigFile now refuses). On
+  // failure, remove the tmp and report the REAL path — the tmp name is an implementation
+  // detail the user never typed.
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(merged, null, 2));
+    renameSync(tmp, path);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // best-effort: the tmp may not exist (write failed before creating it)
+    }
+    throw new AgentKVError(
+      `could not write ${path}: ${e instanceof Error ? e.message.replace(tmp, path) : String(e)}`,
+      "invalid_config",
+      0,
+    );
+  }
   printJson(io.stdout, { ok: true, path, ...merged });
   return EXIT.OK;
 }

@@ -12,7 +12,7 @@ AgentKV is an agent-native key-value store. You hold **one AgentKV account**, he
 
 Values are encrypted client-side (AES-256-GCM) before reaching the server, so the server is zero-knowledge. Storage costs real USDC on Base (mainnet) or Base Sepolia (testnet), charged per operation via the x402 protocol.
 
-> **Prerequisite:** `@agentkv/cli` must be published to npm and resolvable via `npx @agentkv/cli`. As of this writing the package is not yet published — this plugin is the artifact pending that publication step.
+> **Prerequisite:** `@agentkv/cli` is published to npm and resolvable via `npx @agentkv/cli`.
 
 ---
 

@@ -60,18 +60,39 @@ function writeKeystoreFile(file: string, body: unknown): void {
   }
 }
 
+/**
+ * Read the stored private key. Missing file -> null (no wallet yet). A file that EXISTS
+ * but is unreadable THROWS with the path: it may hold a FUNDED key, so silently treating
+ * it as absent both hides the problem ('wallet show' claimed "No wallet yet") and made
+ * every op die later with a raw EEXIST from the create-exclusive mint. Symmetric with
+ * peekStoredAccount, which already throws on a malformed account.json.
+ */
 function readKey(file: string): `0x${string}` | null {
+  let raw: string;
   try {
-    const j = JSON.parse(readFileSync(file, "utf8")) as { privateKey?: unknown };
-    return typeof j.privateKey === "string" && KEY_RE.test(j.privateKey)
-      ? (j.privateKey as `0x${string}`)
-      : null;
+    raw = readFileSync(file, "utf8");
   } catch {
-    return null;
+    return null; // ENOENT (or unreadable perms): no usable wallet file
   }
+  let parsed: { privateKey?: unknown };
+  try {
+    parsed = JSON.parse(raw) as { privateKey?: unknown };
+  } catch {
+    throw new Error(
+      `wallet file ${file} exists but is not valid JSON — it may hold a funded key; ` +
+        "inspect (do not blindly delete) or move it aside, then retry",
+    );
+  }
+  if (typeof parsed?.privateKey === "string" && KEY_RE.test(parsed.privateKey)) {
+    return parsed.privateKey as `0x${string}`;
+  }
+  throw new Error(
+    `wallet file ${file} exists but has no valid privateKey (expected {"privateKey":"0x<64 hex>"}) — ` +
+      "inspect or move it aside, then retry",
+  );
 }
 
-/** The stored wallet's public address + path, or null if none exists. Never creates one. */
+/** The stored wallet's public address + path, or null if none exists; throws if exists but invalid. Never creates one. */
 export function peekStoredWallet(
   env: NodeJS.ProcessEnv = process.env,
 ): { address: `0x${string}`; path: string } | null {

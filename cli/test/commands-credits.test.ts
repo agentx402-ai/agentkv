@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
+import { runCredits } from "../src/commands/credits";
 
 function fakeClient(overrides: Partial<ReturnType<typeof baseFakeClient>> = {}) {
   return { ...baseFakeClient(), ...overrides };
@@ -200,6 +201,34 @@ describe("credits: deposit command — invalid amounts (USAGE errors)", () => {
       stderr: (s) => err.push(s),
     });
     expect(code).toBe(2);
+    expect(client.deposit).not.toHaveBeenCalled();
+  });
+});
+
+describe("credits: deposit command — relative-epsilon acceptance (toWholeAtomicUsd rule)", () => {
+  it.each(["33.3", "1.000001"])(
+    "deposit %s (whole-atomic under the relative-epsilon rule) is forwarded, not rejected",
+    async (amount) => {
+      const client = { deposit: vi.fn(async () => ({ credits_added: 1, balance: 1 })) };
+      const code = await runCredits("deposit", [amount], {
+        client: client as any,
+        stdout: () => {},
+        stderr: () => {},
+      });
+      expect(code).toBe(0);
+      expect(client.deposit).toHaveBeenCalledWith(Number(amount));
+    },
+  );
+
+  it("deposit 1.0000005 (sub-atomic) still exits USAGE without a round-trip", async () => {
+    const client = { deposit: vi.fn() };
+    const err: string[] = [];
+    const code = await runCredits("deposit", ["1.0000005"], {
+      client: client as any,
+      stdout: () => {},
+      stderr: (s) => err.push(s),
+    });
+    expect(code).not.toBe(0);
     expect(client.deposit).not.toHaveBeenCalled();
   });
 });

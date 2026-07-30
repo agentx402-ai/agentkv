@@ -5,7 +5,7 @@ plugin.
 
 ## Development
 
-Requirements: **Node >= 20** (CI floor; [`.nvmrc`](./.nvmrc) pins the recommended 22) and npm.
+Requirements: **Node >= 20.3** (CI floor; [`.nvmrc`](./.nvmrc) pins the recommended 22) and npm.
 
 ```bash
 npm ci

@@ -6,13 +6,44 @@
  * dummy private key so wallet_address can be derived locally (no network needed).
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { startMcp } from "../src/mcp";
+
+// Fakes the stdio TRANSPORT only (McpServer/Server stays real) so `startMcp` can be run
+// in-process for the env-scrub assertion in "MCP server startup" below, without a REAL
+// StdioServerTransport binding to THIS test process's actual stdin/stdout. The real class
+// attaches `process.stdin.on("data", …)` synchronously inside `start()` — see
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js — which would hijack the
+// shared vitest worker's stdio; every other test in this file avoids that by spawning a
+// separate OS process instead. vi.hoisted is required here because vi.mock's factory runs
+// before this file's own top-level statements (Vitest hoists vi.mock above all imports).
+const { FakeStdioServerTransport } = vi.hoisted(() => {
+  class FakeStdioServerTransport {
+    onclose?: () => void;
+    onerror?: (error: Error) => void;
+    onmessage?: (message: unknown, extra?: unknown) => void;
+    start(): Promise<void> {
+      return Promise.resolve();
+    }
+    close(): Promise<void> {
+      this.onclose?.();
+      return Promise.resolve();
+    }
+    send(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+  return { FakeStdioServerTransport };
+});
+vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
+  StdioServerTransport: FakeStdioServerTransport,
+}));
 
 const DUMMY_ENV = {
   ...process.env,
@@ -125,6 +156,184 @@ describe("MCP server lifecycle", () => {
       expect(JSON.parse((f.content as Array<{ text: string }>)[0].text).code).toBe("account_mode");
     } finally {
       await client.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
+
+// Regression: nothing pinned that `startMcp` actually SCRUBS its own env at startup —
+// neutering the `scrubSensitiveEnv(env)` call site in src/mcp.ts left the cli suite green,
+// re-opening a path for an agent to read the funded payer key (or the wallet/encryption key)
+// back out via set_from_env. secrets.test.ts pins scrubSensitiveEnv/isSensitiveEnvName/
+// SENSITIVE_ENV/SENSITIVE_ENV_PATTERN directly; this pins the OTHER half — that startMcp calls it.
+//
+// Why this can't be observed over the wire like the tests above (per the task brief's own
+// escape hatch): every tool that can read an env var re-checks isSensitiveEnvName
+// INDEPENDENTLY of the startup scrub — agentkv_set_from_env via readEnvSecret, and
+// agentkv_run_with_secret via runWithSecret's own inline strip loop (see cli/src/secrets.ts).
+// So a spawned server's tool responses are IDENTICAL whether or not scrubSensitiveEnv ran at
+// startup; there is no observable difference through the MCP wire protocol, spawned or not.
+// This instead asserts the scrub at the point startMcp constructs the server: the real,
+// unmodified startMcp runs in-process against an injected `env` object (the stdio transport
+// is faked per the vi.mock above; McpServer/Server itself is the real, unmocked SDK code).
+describe("MCP server startup: env scrub (server-construction level)", () => {
+  it("startMcp deletes protected key vars from its own env before serving, leaving the rest", () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-scrub-"));
+    const env = {
+      AGENTKV_HOME: home,
+      AGENTKV_ENDPOINT: "https://example.invalid",
+      AGENTKV_PRIVATE_KEY: "0xdead",
+      AGENTKV_PAYER_KEY: "0xbeef", // funded external payer — holds real USDC
+      AGENTKV_WALLET_MNEMONIC: "twelve words",
+      OPENAI_API_KEY: "sk-keepme", // third-party secret — storing these is the tool's purpose
+    } as NodeJS.ProcessEnv;
+    const client = {
+      set: () => Promise.resolve({ ok: true }),
+      get: () => Promise.resolve(null),
+      delete: () => Promise.resolve({ ok: true }),
+      deposit: () => Promise.resolve({}),
+      balance: () => Promise.resolve(0),
+      address: "0xabc",
+    };
+    try {
+      // scrubSensitiveEnv runs synchronously inside startMcp, before its first `await`
+      // (server.connect) — by the time this call returns control here, the mutation below
+      // has already happened. The returned promise is deliberately not awaited: the fake
+      // transport's onclose is never triggered so it never settles, but it holds no real OS
+      // handle (stdin/stdout are never touched by FakeStdioServerTransport), so nothing
+      // leaks or hangs — `.catch` just guards against an unhandled-rejection crash.
+      void startMcp({ env, client: client as any }).catch(() => {});
+      expect(env.AGENTKV_PRIVATE_KEY).toBeUndefined();
+      expect(env.AGENTKV_PAYER_KEY).toBeUndefined();
+      expect(env.AGENTKV_WALLET_MNEMONIC).toBeUndefined();
+      expect(env.AGENTKV_ENDPOINT).toBe("https://example.invalid");
+      expect(env.OPENAI_API_KEY).toBe("sk-keepme");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// Visibility, not a default cap: the MCP server is one long-lived client with NO cumulative
+// spend bound by default. Rather than impose a default cap (which would silently change spend
+// behavior for existing users), startMcp warns ONCE at startup when
+// AGENTKV_MAX_SESSION_SPEND_USD is unset — so an operator who didn't intend an unbounded
+// server finds out immediately instead of discovering it after the fact.
+//
+// Same in-process harness as the env-scrub block above: startMcp's config resolution + the
+// warning check both run synchronously before its first `await` (server.connect), so the
+// write (or non-write) has already happened by the time this synchronous call returns
+// control here — see the comment on the scrub test for the full explanation. The writer is
+// INJECTED (deps.stderr, the same `Writer` shape cli.ts's own stdout/stderr deps use) rather
+// than captured off the real process.stderr, precisely so this stays a synchronous, in-process
+// assertion instead of a real stdio/subprocess capture.
+describe("MCP server startup: session spend cap warning", () => {
+  // Never invoked — these tests only check what startMcp writes at startup.
+  const client = {
+    set: () => Promise.resolve({ ok: true }),
+    get: () => Promise.resolve(null),
+    delete: () => Promise.resolve({ ok: true }),
+    deposit: () => Promise.resolve({}),
+    balance: () => Promise.resolve(0),
+    address: "0xabc",
+  };
+
+  it("warns on stderr when the server starts with no session spend cap", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-warn-"));
+    const env = {
+      AGENTKV_HOME: home,
+      AGENTKV_ENDPOINT: "https://example.invalid",
+    } as NodeJS.ProcessEnv;
+    const chunks: string[] = [];
+    try {
+      void startMcp({ env, client: client as any, stderr: (s) => chunks.push(s) }).catch(() => {});
+      const written = chunks.join("");
+      expect(written).toMatch(/no session spend cap configured/);
+      expect(written).toContain("AGENTKV_MAX_SESSION_SPEND_USD");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("stays quiet when AGENTKV_MAX_SESSION_SPEND_USD is configured", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-nowarn-"));
+    const env = {
+      AGENTKV_HOME: home,
+      AGENTKV_ENDPOINT: "https://example.invalid",
+      AGENTKV_MAX_SESSION_SPEND_USD: "5",
+    } as NodeJS.ProcessEnv;
+    const chunks: string[] = [];
+    try {
+      void startMcp({ env, client: client as any, stderr: (s) => chunks.push(s) }).catch(() => {});
+      expect(chunks).toHaveLength(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // The two tests above inject a fake `stderr` writer and prove the warning reaches IT — but
+  // they'd pass identically even if the code ALSO wrote to real stdout (an injected writer
+  // can't observe that). Close that gap for real: spawn the actual built binary (bypassing
+  // StdioClientTransport/Client, which only exposes the PARSED JSON-RPC channel, never raw
+  // bytes) and capture stdout/stderr as separate raw byte streams, mirroring the
+  // "auto-provision notice goes to stderr" test's spawn/teardown idiom above.
+  it("real subprocess: the warning is on stderr and never on stdout (the JSON-RPC channel)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agentkv-stdio-"));
+    const child = spawn(process.execPath, [CLI_PATH, "mcp"], {
+      env: {
+        ...DUMMY_ENV,
+        AGENTKV_HOME: home, // isolate keystore, matching the other subprocess tests
+        AGENTKV_MAX_SESSION_SPEND_USD: "", // explicit unset — DUMMY_ENV spreads real process.env
+      },
+      stdio: ["pipe", "pipe", "pipe"], // keep stdin open (no EOF) so the server doesn't exit early
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => {
+      stdout += d.toString("utf8");
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString("utf8");
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `timed out waiting for the stderr warning (stderr so far: ${JSON.stringify(stderr)})`,
+              ),
+            ),
+          10_000,
+        );
+        child.once("error", (e) => {
+          clearTimeout(timer);
+          reject(e);
+        });
+        const check = () => {
+          if (stderr.includes("no session spend cap configured")) {
+            clearTimeout(timer);
+            resolve();
+          }
+        };
+        child.stderr.on("data", check);
+        check(); // in case the write already landed before this listener was attached
+      });
+      // stdout and stderr are independent OS pipes with NO cross-stream delivery-order
+      // guarantee: observing the text on stderr proves nothing about whether a stray stdout
+      // write has finished arriving yet. Give any in-flight stdout data a beat to land before
+      // asserting on it — otherwise this test could pass merely because it checked before a
+      // real leak's bytes made it through the pipe (verified: without this delay, a deliberate
+      // stdout leak of the exact same warning text was NOT caught).
+      await new Promise((r) => setTimeout(r, 500));
+      expect(stderr).toContain("no session spend cap configured");
+      expect(stderr).toContain("AGENTKV_MAX_SESSION_SPEND_USD");
+      // No JSON-RPC request was ever sent, so stdout — the JSON-RPC channel — must be
+      // untouched: in particular, never the warning text (the whole point of this test).
+      expect(stdout).not.toContain("no session spend cap configured");
+      expect(stdout).toBe("");
+    } finally {
+      child.kill();
       rmSync(home, { recursive: true, force: true });
     }
   }, 15_000);

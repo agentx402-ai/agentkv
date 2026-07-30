@@ -75,6 +75,63 @@ describe("MCP tools", () => {
   });
 });
 
+describe("MCP tool annotations", () => {
+  // Minimal fake — these tests only inspect registered annotations, never invoke a handler.
+  function fakeClient() {
+    return {
+      set: vi.fn(),
+      get: vi.fn(),
+      delete: vi.fn(),
+      deposit: vi.fn(),
+      balance: vi.fn(),
+      listKeys: vi.fn(),
+      address: "0xabc0000000000000000000000000000000000000",
+      endpoint: "https://staging.example",
+    };
+  }
+
+  it("agentkv_get is not annotated read-only, destructive, or idempotent", () => {
+    const server = buildMcpServer(fakeClient() as never);
+    const ann = (
+      server as never as {
+        _registeredTools: Record<string, { annotations?: Record<string, unknown> }>;
+      }
+    )._registeredTools.agentkv_get.annotations;
+    // Paid op — see agentkv_get's tool description ("costs $0.003 USD per read"); a get can
+    // settle real USDC on-chain per call under AGENTKV_INLINE=awal account mode.
+    expect(ann?.readOnlyHint).toBe(false);
+    // A read never modifies stored data. destructiveHint defaults to TRUE (per the MCP spec)
+    // when omitted, so this must be set explicitly — matching the sibling agentkv_get_to_file.
+    expect(ann?.destructiveHint).toBe(false);
+    // idempotency_key is OPTIONAL: when the caller omits it (the default call shape),
+    // client.get() mints a fresh random nonce per call, so two calls with IDENTICAL tool
+    // arguments are billed separately. idempotentHint means "same arguments, no additional
+    // effect" — false here, matching the sibling read tools agentkv_get_to_file and
+    // agentkv_run_with_secret, which wrap the same client.get() through the same optional key.
+    expect(ann?.idempotentHint).toBe(false);
+  });
+
+  it("every read-only-annotated tool is free: no readOnlyHint:true tool spends", () => {
+    // Guard rail for future tools: the free set is balance / wallet_address / list_keys / fund-url.
+    const server = buildMcpServer(fakeClient() as never);
+    const tools = (
+      server as never as {
+        _registeredTools: Record<string, { annotations?: Record<string, unknown> }>;
+      }
+    )._registeredTools;
+    const readOnly = Object.entries(tools)
+      .filter(([, t]) => t.annotations?.readOnlyHint === true)
+      .map(([n]) => n)
+      .sort();
+    expect(readOnly).toEqual([
+      "agentkv_balance",
+      "agentkv_fund",
+      "agentkv_list_keys",
+      "agentkv_wallet_address",
+    ]);
+  });
+});
+
 describe("MCP account-key mode awareness", () => {
   const ZERO = "0x0000000000000000000000000000000000000000";
   const WALLET_ADDR = "0xabc0000000000000000000000000000000000000";
@@ -129,6 +186,7 @@ describe("MCP account-key mode awareness", () => {
   });
 
   it("account mode: wallet_address reports account-key mode, never the zero-address sentinel", async () => {
+    // Deliberately ZERO, not undefined — adversarial: proves below that the value never leaks.
     const tools = toolsFor(fakeClient({ address: ZERO }), true);
     const res = await tools.agentkv_wallet_address.handler({}, {});
     const body = JSON.parse(res.content[0].text);
@@ -154,8 +212,10 @@ describe("MCP account-key mode awareness", () => {
 
   it("account mode: fund refuses BEFORE onramp config is consulted (even with onramp omitted)", async () => {
     // accountMode guard must precede the onramp-unavailable check — no burn URL regardless.
-    const tools = (buildMcpServer(fakeClient({ address: ZERO }) as any, undefined, true) as any)
-      ._registeredTools;
+    // address: undefined matches the real client's account-key-mode contract (no wallet).
+    const tools = (
+      buildMcpServer(fakeClient({ address: undefined }) as any, undefined, true) as any
+    )._registeredTools;
     const res = await tools.agentkv_fund.handler({}, {});
     expect(res.isError).toBe(true);
     expect(JSON.parse(res.content[0].text).code).toBe("account_mode");
@@ -167,7 +227,8 @@ describe("MCP account-key mode awareness", () => {
     const deposit = vi.fn(async () => {
       throw new Error("no_signer");
     });
-    const tools = toolsFor(fakeClient({ address: ZERO, deposit }), true);
+    // address: undefined matches the real client's account-key-mode contract (no wallet).
+    const tools = toolsFor(fakeClient({ address: undefined, deposit }), true);
     const res = await tools.agentkv_deposit.handler({ amount_usd: 5 }, {});
     expect(res.isError).toBe(true);
     const body = JSON.parse(res.content[0].text);
@@ -184,6 +245,48 @@ describe("MCP account-key mode awareness", () => {
     expect(res.isError).toBeFalsy();
     expect(deposit).toHaveBeenCalledWith(5);
     expect(JSON.parse(res.content[0].text)).toEqual({ credited: 5 });
+  });
+});
+
+describe("MCP agentkv_list_keys", () => {
+  const base = {
+    set: vi.fn(),
+    get: vi.fn(),
+    delete: vi.fn(),
+    deposit: vi.fn(),
+    balance: vi.fn(),
+    address: "0xabc",
+  };
+
+  it("forwards cursor + limit and returns the page as JSON", async () => {
+    const calls: any[][] = [];
+    const client = {
+      ...base,
+      listKeys: async (...a: any[]) => {
+        calls.push(a);
+        return { keys: ["alpha", "beta"], cursor: "next-1" };
+      },
+    };
+    const server = buildMcpServer(client as any);
+    const tools = (server as any)._registeredTools;
+    const res = await tools.agentkv_list_keys.handler({ cursor: "c-0", limit: 25 }, {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toEqual({ cursor: "c-0", limit: 25 });
+    expect(JSON.parse(res.content[0].text)).toEqual({ keys: ["alpha", "beta"], cursor: "next-1" });
+  });
+
+  it("first page: omitted cursor is passed as null, limit as undefined", async () => {
+    const calls: any[][] = [];
+    const client = {
+      ...base,
+      listKeys: async (...a: any[]) => {
+        calls.push(a);
+        return { keys: [], cursor: null };
+      },
+    };
+    const server = buildMcpServer(client as any);
+    await (server as any)._registeredTools.agentkv_list_keys.handler({}, {});
+    expect(calls[0][0]).toEqual({ cursor: null, limit: undefined });
   });
 });
 

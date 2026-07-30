@@ -92,6 +92,27 @@ describe("CoinbaseOnramp.buildUrl", () => {
     expect(new URL(ok).searchParams.get("presetFiatAmount")).toBe("0.01");
   });
 
+  it("rejects amounts above $1e9 instead of emitting exponential-notation presetFiatAmount", () => {
+    expect(() =>
+      new CoinbaseOnramp().buildUrl({
+        address: ADDR,
+        network: "eip155:8453",
+        config: { appId: "x" },
+        amountUsd: 1e21, // today: presetFiatAmount=1.0000000000000001e+21
+      }),
+    ).toThrow(/maximum/);
+  });
+
+  it("keeps presetFiatAmount in plain decimal notation at the top of the allowed range", () => {
+    const url = new CoinbaseOnramp().buildUrl({
+      address: ADDR,
+      network: "eip155:8453",
+      config: { appId: "x" },
+      amountUsd: 999999999.99,
+    });
+    expect(new URL(url).searchParams.get("presetFiatAmount")).toBe("999999999.99");
+  });
+
   it("THROWS an actionable error naming the env var when appId is missing", () => {
     expect(() =>
       new CoinbaseOnramp().buildUrl({ address: ADDR, network: "eip155:8453", config: {} }),

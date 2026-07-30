@@ -7,9 +7,8 @@ operations (`agentkv_set`/`get`/`delete`/`list_keys`/`deposit`/`balance`/`wallet
 (`set_from_env` / `set_from_file` / `get_to_file` / `run_with_secret`) that store and use
 credentials without the value entering the model context.
 
-> **Prerequisite:** the plugin runs `npx -y @agentkv/cli mcp`, so [`@agentkv/cli`](../cli) must be
-> published to npm (or resolvable via `npx`). It is **not yet published** — until then, use the
-> local-checkout method in step 1.
+> **Prerequisite:** the plugin runs `npx -y @agentkv/cli mcp`. Both packages are published to npm —
+> `npx -y @agentkv/cli` resolves the released CLI.
 >
 > **Windows:** `.mcp.json` uses `"command": "npx"`. Claude Code's MCP launcher resolves the
 > `npx.cmd` shim on Windows automatically, so this works as-is. Other MCP clients that spawn the
@@ -48,6 +47,14 @@ threads it into the MCP server for you — **no shell environment variables to s
 | Encryption key | No | advanced; defaults to a key derived (HKDF) from the private key |
 | Max per-operation spend (USD) | No | refuses any single operation costing more than this; leave empty for no per-op cap |
 | Max session spend (USD) | No | refuses further operations once cumulative spend across the whole MCP session exceeds this; leave empty for no session cap |
+
+For a long-lived session, set **both** the per-operation and session caps above — a per-op cap
+alone still leaves cumulative spend unbounded. This matters most for `agentkv_deposit`: since a
+deposit amount is caller-chosen (not server-quoted), it isn't subject to the built-in per-op
+price ceiling that bounds `agentkv_get`/`agentkv_set` when no per-op cap is set — without a
+configured per-op cap, the session cap is the only limit on a single deposit call. Leave the
+session cap blank — even with a per-operation cap configured — and the server still runs, but
+logs a startup warning that it has no cumulative bound.
 
 Don't have a wallet? Generate one first with `npx @agentkv/cli wallet new` and paste that key.
 To change any of these later, run `/plugin` and reconfigure the `agentkv` plugin.

@@ -1,0 +1,36 @@
+name: Refs
+
+# no-internal-refs must run on EVERY push — including docs-only ones, which ci.yml's
+# `paths-ignore: '**.md'` skips for build cost. Markdown is where internal references
+# are most likely, and this check is grep-cheap, so it gets an always-on workflow.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Deny by default, matching ci.yml: the job below re-grants only `contents: read`.
+permissions: {}
+
+# Actions are pinned to full commit SHAs, not mutable tags — same policy and same action
+# set as ci.yml/publish.yml, so a moved or compromised tag cannot execute attacker code here.
+# Dependabot (.github/dependabot.yml, github-actions ecosystem) bumps these.
+
+jobs:
+  no-internal-refs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Fail on private/internal references in tracked files
+        run: |
+          # Keep the public tree free of the private backend repo name and its
+          # internal file paths. This workflow file is excluded because it
+          # necessarily names the patterns it searches for.
+          if git grep -nIE 'agentkv-worker|worker/(src|test)/' -- ':!.github/workflows/refs.yml'; then
+            echo "::error::internal/private reference found in a tracked file (see matches above)"
+            exit 1
+          fi
+          echo "ok: no internal references in tracked files"

@@ -10,12 +10,19 @@ shared `@agentx402-ai/core` is released separately from [its own repo](https://g
 - `client/src/index.ts` (`VERSION`) — reported by the SDK
 - `cli/src/version.ts` (`VERSION`) — `agentkv --version` and the MCP server handshake
 - `plugin/agentkv/.claude-plugin/plugin.json` (`version`)
+- `plugin/agentkv/.mcp.json` — the MCP runtime pin (`@agentkv/cli@<version>` in args)
 - `client/test/scaffold.test.ts` — pins the exported `VERSION` literal (the suite fails
   on a bump until it moves too; discovered the release after this list was written)
 - `agentx402-ai/claude-plugins` → `.claude-plugin/marketplace.json` (the `agentkv` plugin's
   `source.ref`) — the cross-repo pin the shared marketplace serves; synced on release (step 7).
 
-CI fails if the two publishable `package.json` versions diverge (the `versions` job).
+CI's `versions` job (`scripts/check-versions.mjs`) cross-checks all six sources — including
+the `.mcp.json` runtime pin — plus the cli→client dependency range, on every pull request.
+`publish.yml` does not call that script: it carries its own inline guard that re-checks the
+release tag against five of the six sources (both `package.json`s, both `VERSION` consts,
+`plugin.json`) plus the cli→client dependency range, then a narrower re-check of just the two
+`package.json`s immediately before publishing. The `.mcp.json` runtime pin is therefore
+checked by CI, not by the release-time guard.
 
 ## Publish order (required)
 
@@ -30,7 +37,7 @@ release it first from its own repo and bump the `^` range in `client`/`cli`.
 
 ## Steps
 
-1. Bump every version source above to the new version.
+1. Bump every version source above to the new version (including the `@agentkv/cli@<version>` pin in `.mcp.json`).
 2. Update `CHANGELOG.md` — add a dated `## [<version>]` section for the release.
 3. `npm ci && npm run lint && npm run build && npm test` — all green.
 4. `npm pack --dry-run --workspaces` — confirm each tarball's contents.

@@ -111,7 +111,7 @@ export async function runListKeys(
   io: { client: any; stdout: Writer; stderr: Writer },
 ): Promise<number> {
   const { flags } = parseFlags(args);
-  const limit = flags.limit !== undefined ? Number(flags.limit) : undefined;
+  const limit = flags.limit as number | undefined;
   const onePage = flags.cursor !== undefined;
   const keys: string[] = [];
   let cursor: string | null = flags.cursor ?? null;

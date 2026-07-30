@@ -222,6 +222,38 @@ export async function runAccount(
       return EXIT.USAGE;
     }
 
+    // A payer key typed WITHOUT --from-key was silently discarded, and the AMBIENT payer
+    // (AGENTKV_PAYER_KEY / AGENTKV_PRIVATE_KEY) signed the real-USDC payment instead —
+    // a different wallet than the operator named on the command line. Never echo the
+    // argument: it may BE the private key.
+    if (positionals.length > 2) {
+      printError(
+        io.stderr,
+        "usage",
+        "unexpected extra argument after 'account fund <usd>' — pass a payer key as " +
+          "--from-key <0xhex> (or via AGENTKV_PAYER_KEY), not as a positional",
+      );
+      return EXIT.USAGE;
+    }
+
+    // `account fund` moves real USDC from the payer wallet, so the resolved caps must bound
+    // it exactly as they bound `deposit` — fundAccount itself is not cap-gated, and
+    // `--max-spend-usd 5 account fund 50` previously proceeded. One CLI invocation is one
+    // process, so the session cap bounds this single spend too.
+    for (const [cap, label] of [
+      [cfg.maxSpendUsd, "per-op cap"],
+      [cfg.maxSessionSpendUsd, "session cap"],
+    ] as const) {
+      if (cap !== undefined && !(usd <= cap)) {
+        printError(
+          io.stderr,
+          "spend_cap_exceeded",
+          `account fund $${usd} exceeds the configured ${label} $${cap}`,
+        );
+        return EXIT.PAYMENT;
+      }
+    }
+
     // 2) Configured account (env AGENTKV_ACCOUNT_KEY wins over the file), mirroring
     //    `account show` / clientFromConfig precedence. A SET-but-malformed env key errors.
     const envAccountKey = cfg.accountKey;
@@ -287,6 +319,8 @@ export async function runAccount(
         encryptionKey: encKey,
         endpoint: cfg.endpoint,
         network: cfg.network,
+        maxSpendUsd: cfg.maxSpendUsd,
+        maxSessionSpendUsd: cfg.maxSessionSpendUsd,
       });
     }
 

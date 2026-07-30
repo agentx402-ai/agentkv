@@ -6,6 +6,112 @@ All notable changes to AgentKV are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`@agentkv/cli`**: `agentkv deposit` now accepts fractional USD amounts that resolve to a
+  whole number of atomic USDC units (e.g. `$33.30`), reusing the client's exported
+  `toWholeAtomicUsd`.
+- **`@agentkv/cli`**: `agentkv config` now persists `--onramp-provider` / `--onramp-app-id`,
+  matching the endpoint/network/spend-cap flags it already saved.
+
+### Changed
+
+- **`@agentkv/client`**: constructor options now reject three previously-unvalidated shapes at
+  construction (`invalid_config`) instead of failing later, or not at all: a missing or
+  malformed `endpoint` (must be an absolute `http`/`https` URL), a non-finite `retries`, and
+  `accountKey` passed alongside a wallet (`privateKey`/`signer`) — which used to silently drop
+  the wallet and proceed in account-key mode instead of rejecting the ambiguous config.
+  `set()`'s `ttlDays` and `listKeys()`'s `limit` are now validated the same way
+  (`invalid_value`) instead of reaching the wire. A pre-existing guard — rejecting
+  `privateKey` alongside an explicit `encryptionKey` — is unchanged but is now pinned by a
+  regression test.
+- **`@agentkv/cli`**: a `--limit` flag that isn't a positive integer now fails closed instead
+  of forwarding `NaN`/`0` to the wire, mirroring the client-side `listKeys()` guard above.
+- **`@agentkv/client`**: a tampered or corrupted stored value now throws a distinguishing
+  `decrypt_failed` `AgentKVError` instead of an opaque low-level crypto exception; `decrypt`
+  is re-exported from the package root, so this also changes what a caller using it directly
+  sees.
+- **`@agentkv/client`**: `listKeys()` now normalizes an empty-string cursor from the server to
+  `null`, so a `while (cursor !== null)` pagination loop terminates instead of looping forever.
+- **`@agentkv/cli`**: a corrupt `wallet.json` now fails with a descriptive error naming the
+  file path instead of a misleading "no wallet yet".
+- **`@agentkv/cli`**: `agentkv fund` now refuses onramp amounts above $1,000,000,000 instead of
+  building a URL with an implausible amount.
+- Claude plugin: `plugin/agentkv/.mcp.json` now pins the MCP server to `@agentkv/cli@0.2.2`
+  instead of spawning whatever is currently `@latest`; `AGENTKV_ENDPOINT` also gained the
+  empty-value `:-` fallback its sibling vars already had, so a blank endpoint config can't
+  leave an unexpanded placeholder overriding the hosted default.
+- CI's always-on `no-internal-refs` check now runs as its own workflow instead of living
+  inside `ci.yml`'s docs-`paths-ignore`'d job (docs-only pushes are exactly where an internal
+  reference is most likely to land), and the build/test matrix gained Node 24 (`publish.yml`'s
+  runtime). The version-lockstep check moved into `scripts/check-versions.mjs`, which also
+  covers a sixth source — the plugin's pinned MCP runtime — on every pull request.
+- **`@agentkv/client`**: `maxSpendUsd` / `maxSessionSpendUsd` now reject a malformed value
+  (`NaN`, `Infinity`, negative, or non-number) at construction (`invalid_config`) instead of
+  silently accepting it. A `NaN` cap was strictly WORSE than no cap at all: `usd > NaN` is
+  always false, so it disabled both the per-op and the session cap, AND — because the built-in
+  ceiling only guards an unconfigured client — it also defeated the built-in $0.05 per-op price
+  ceiling that protects against a spoofed or compromised worker's inflated quote.
+- **`@agentkv/cli`**: the same rule now applies to a spend cap read from `config.json` — a
+  malformed persisted value throws `invalid_config` instead of reaching the SDK as `NaN`, and is
+  validated even when a `--max-spend-usd` flag or `AGENTKV_MAX_SPEND_USD` env value shadows it,
+  so a corrupt file can't become the live cap the moment the override is removed.
+- **`@agentkv/client`**: the cumulative session cap (`maxSessionSpendUsd`) is now enforced with
+  a synchronous reservation taken at the moment each spend is checked — covering ops, deposits,
+  and top-offs alike — instead of only being counted after settlement. Previously, concurrent
+  calls could all check against the same stale spent-so-far counter, all pass, and all sign real
+  EIP-3009 authorizations, so the cumulative cap provided no bound at all under concurrency.
+- **`@agentkv/cli`**: `agentkv account fund` now honors the resolved `maxSpendUsd` /
+  `maxSessionSpendUsd` caps the same way `deposit` does (previously unbounded), and now errors
+  instead of silently discarding a payer key passed as a stray positional argument — the ambient
+  `AGENTKV_PAYER_KEY` / `AGENTKV_PRIVATE_KEY` wallet would otherwise have paid instead, with no
+  indication a different wallet was used.
+- **`@agentkv/cli`**: a corrupt or non-JSON `config.json` now fails loud (`invalid_config`)
+  instead of silently reverting to defaults — which would retarget the endpoint to production
+  and drop a persisted spend cap. `agentkv config` now writes atomically (temp file + rename)
+  and removes the temp file on a failed write, so a crash mid-write can no longer produce the
+  truncated file that the read path now refuses.
+- **`@agentkv/client`**: sign-to-derive (the `{ signer }` shape with no explicit
+  `encryptionKey`) now rejects a signature whose recovery id (`v`) is not the standard `27`/`28`
+  (`invalid_config`) instead of hashing it into different key material. **Migration note:** some
+  KMS and raw-secp256k1 signer wrappers return `v ∈ {0,1}`; such signers must now construct with
+  an explicit `encryptionKey`. Data already written under the previous silent derivation from a
+  `v ∈ {0,1}` signature is not readable through the public API — this makes loud (a thrown
+  `invalid_config`) what was previously silent data loss (`get`/`listKeys` quietly returning
+  `null`/empty with no error).
+- **`@agentkv/client`**: a supplied `encryptionKey` is now copied into the client's retained key
+  material instead of aliased — previously, a caller that zeroized its own key buffer after
+  construction (good hygiene) would silently cause every subsequent key derivation to use zeros.
+- **`@agentkv/cli`**: the `awal`-backed `topoffPayer` now rejects an `{success:false}`
+  settlement payload even when it carries no `error` field, instead of treating a missing
+  `error` as confirmation that the top-off settled. awal collapses every failure mode (payment
+  failure, insufficient balance, network error, non-2xx) into `{success:false, error}` — a
+  payload with the flag and no message is still a failure, not a settled deposit.
+- **`@agentkv/cli`**: the MCP server's `agentkv_get` tool is now annotated `readOnlyHint:false,
+  destructiveHint:false, idempotentHint:false` instead of read-only — a `get` is a paid
+  operation (credits, or real USDC settled per call under `AGENTKV_INLINE=awal`), and since the
+  optional `idempotency_key` defaults to a fresh nonce per call, two calls with identical tool
+  arguments are billed separately. `agentkv mcp` also now warns on stderr at startup when no
+  session spend cap (`AGENTKV_MAX_SESSION_SPEND_USD`) is configured, since a long-lived,
+  unbudgeted server can otherwise spend without any cumulative bound.
+- **`@agentkv/client`**: `@agentx402-ai/core` moves from `^0.1.1` to `^0.2.0`, a fail-closed
+  hardening release. The client now fails closed on an unpinned or unsupported network instead
+  of guessing: `buildPaymentHeader`/`challengePriceUsd` now require the client's configured
+  network to be pinned before they will sign or price anything, and the CAIP-2 parser used for
+  EIP-712 identity-header signing now rejects a non-canonical network string instead of coercing
+  it — previously `--network eip155:0x2105` was silently accepted as Base mainnet
+  (`Number("0x2105") === 8453`) and signed into identity headers for a chain the user never
+  typed. A payment challenge whose advertised EIP-712 domain (`extra.name`/`extra.version`)
+  disagrees with the pinned asset-registry domain is now rejected too, instead of signed
+  (`domain_mismatch`). This package's own call sites already pinned `expectedNetwork` everywhere
+  `buildPaymentHeader`/`challengePriceUsd` are used, so no source changes were needed for the
+  bump itself — but five new error codes are now reachable through the existing `AgentKVError`
+  type and the CLI's exit-code mapping: `unpinned_network`, `invalid_challenge`,
+  `unsupported_network`, `invalid_amount`, `domain_mismatch`. Both `client/` and `cli/`'s
+  declared `engines.node` floor also moves to `>=20.3` (from `>=20`), matching core's own.
+- Dev-dependency bumps: `@biomejs/biome` 2.5.6, `@types/node` 26.1.2, `@x402/core`/`@x402/evm`
+  2.20.0. Dev-only — no change for consumers of either published package.
+
 ### Security
 
 - **The release pipeline no longer runs third-party code in the job that can publish.**
@@ -15,11 +121,12 @@ All notable changes to AgentKV are documented here. The format follows
   invocation. It publishes only the `client/dist` + `cli/dist` handed over from the build
   job, after verifying they are a complete build. See `SECURITY.md` for what that does and
   does not cover.
-- A release now refuses any ref that is not a `vX.Y.Z` tag whose commit matches all five
-  version sources, so a Release tagged ahead of the committed version cannot publish the
-  wrong one. A prerelease tag publishes under the `next` dist-tag rather than failing at
-  npm. GitHub Actions are pinned to commit SHAs, both workflows declare least-privilege
-  `permissions`, and `npm audit` gates CI and release.
+- A release now refuses any ref that is not a `vX.Y.Z` tag whose commit matches five of the
+  six version sources (the plugin's `.mcp.json` runtime pin is checked by CI on every pull
+  request, not by this release-time guard), so a Release tagged ahead of the committed
+  version cannot publish the wrong one. A prerelease tag publishes under the `next` dist-tag
+  rather than failing at npm. GitHub Actions are pinned to commit SHAs, both workflows
+  declare least-privilege `permissions`, and `npm audit` gates CI and release.
 - Lockfile advisories cleared: `fast-uri` 3.1.3 → 3.1.4 and `postcss` 8.5.16 → 8.5.24 (both
   high, dev chain), and `@modelcontextprotocol/sdk` 1.29.0 → 1.30.0, which pulls
   `@hono/node-server` 2.x and resolves a moderate `serve-static` path-traversal advisory.
@@ -28,13 +135,17 @@ All notable changes to AgentKV are documented here. The format follows
   resolve it through their own tree regardless. No runtime behavior change in either
   published package.
 
-## [0.2.2] - 2026-07-29
+[Unreleased]: https://github.com/agentx402-ai/agentkv/compare/v0.2.2...HEAD
+
+## [0.2.2] — 2026-07-28
 
 ### Changed
 
 - Dependency floors raised to match what installs already resolve: `@agentx402-ai/core`
   `^0.1.1` (metadata-only release: corrected npm repository link) and `viem` `^2.55.10`.
   No runtime behavior change in this package.
+
+[0.2.2]: https://github.com/agentx402-ai/agentkv/releases/tag/v0.2.2
 
 ## [0.2.1] — 2026-07-10
 
