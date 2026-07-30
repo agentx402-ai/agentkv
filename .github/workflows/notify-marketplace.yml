@@ -29,6 +29,19 @@ permissions: {}
 
 jobs:
   dispatch:
+    # A PRERELEASE must not move the marketplace pin. marketplace.json serves exactly one
+    # source.ref per plugin, so pinning an rc points everyone installing the plugin at a
+    # prerelease CLI — the first rc cut here did precisely that and had to be re-pinned by
+    # hand. Checked two ways because they can disagree: the Release's own prerelease flag,
+    # and a semver prerelease suffix in the tag (a tag like v1.0.0-rc.1 published without the
+    # flag set is still a prerelease in every sense that matters here).
+    #
+    # workflow_dispatch is deliberately NOT filtered: a manual run names the ref explicitly,
+    # so pinning a prerelease by hand stays possible for anyone who actually wants it.
+    if: >-
+      github.event_name != 'release' ||
+      (github.event.release.prerelease == false &&
+       !contains(github.event.release.tag_name, '-'))
     runs-on: ubuntu-latest
     steps:
       # Scope the token twice over: to the one repository it must reach, and to the one
