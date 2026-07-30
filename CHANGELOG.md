@@ -6,9 +6,9 @@ All notable changes to AgentKV are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.0-rc.1] — 2026-07-30
+## [0.3.0] — 2026-07-30
 
-> Prerelease. Published to npm under the `next` dist-tag; `latest` still serves 0.2.2.
+> Previewed as `0.3.0-rc.1` under the `next` dist-tag before this release; the contents are identical.
 
 ### Added
 
@@ -139,7 +139,8 @@ All notable changes to AgentKV are documented here. The format follows
   resolve it through their own tree regardless. No runtime behavior change in either
   published package.
 
-[Unreleased]: https://github.com/agentx402-ai/agentkv/compare/v0.3.0-rc.1...HEAD
+[Unreleased]: https://github.com/agentx402-ai/agentkv/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/agentx402-ai/agentkv/releases/tag/v0.3.0
 [0.3.0-rc.1]: https://github.com/agentx402-ai/agentkv/releases/tag/v0.3.0-rc.1
 
 ## [0.2.2] — 2026-07-28
