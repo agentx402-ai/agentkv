@@ -246,19 +246,59 @@ jobs:
 
       # This job, not the build job, is the one holding publishing rights, so it must
       # independently refuse a mismatched ref rather than trusting an upstream check.
-      - name: Guard — re-verify the tag matches the packages being published
+      # It checks ALL SIX sources, not just the two package.json versions it used to. Four of
+      # the six were unverified here, and two of those — the VERSION constants — are compiled
+      # INTO the published bundles, so a drift shipped a package that misreports its own version
+      # at runtime (`--version`, the MCP handshake), unrecoverable without a new release. The
+      # sixth, the plugin's runtime pin, decides which CLI plugin users actually npx.
+      #
+      # DELIBERATELY INLINE and dependency-free: it must NOT call the shared checker the PR gate
+      # uses, or a single edit could disable both gates. Nothing is installed in this job.
+      - name: Guard — re-verify the tag matches every version source before publishing
         env:
           TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -euo pipefail
-          WANT="${TAG#v}"
-          for w in client cli; do
-            GOT="$(node -p "require('./$w/package.json').version")"
-            if [ "$GOT" != "$WANT" ]; then
-              echo "::error::Refusing to publish: tag is $TAG but $w is $GOT."
-              exit 1
-            fi
-          done
+          node - <<'NODE'
+          const fs = require("fs");
+          const read = (p) => fs.readFileSync(p, "utf8");
+          const ver = (p) => JSON.parse(read(p)).version;
+          // Anchored at line start so a commented-out `// export const VERSION = "9.9.9"`
+          // sitting above the live declaration cannot win the match.
+          const konst = (p) => (read(p).match(/^export const VERSION = "([^"]+)"/m) || [])[1];
+          const want = process.env.TAG.replace(/^v/, "");
+          const v = {
+            clientPkg: ver("client/package.json"),
+            cliPkg: ver("cli/package.json"),
+            clientConst: konst("client/src/index.ts"),
+            cliConst: konst("cli/src/version.ts"),
+            plugin: ver("plugin/agentkv/.claude-plugin/plugin.json"),
+            mcpPin: (read("plugin/agentkv/.mcp.json").match(/"@agentkv\/cli@([^"]+)"/) || [])[1],
+          };
+          // Map a parse miss to "(not found)" BEFORE stringify: JSON.stringify drops an
+          // undefined value, which would print a bare {} and hide which source failed.
+          const bad = Object.fromEntries(
+            Object.entries(v)
+              .filter(([, got]) => got !== want)
+              .map(([k, got]) => [k, got ?? "(not found)"]),
+          );
+          if (Object.keys(bad).length) {
+            console.error(
+              "::error::Refusing to publish: tag " + process.env.TAG +
+                " does not match: " + JSON.stringify(bad),
+            );
+            process.exit(1);
+          }
+          const range = JSON.parse(read("cli/package.json")).dependencies["@agentkv/client"];
+          if (range !== "^" + want) {
+            console.error(
+              "::error::Refusing to publish: cli depends on @agentkv/client " + range +
+                ", expected ^" + want,
+            );
+            process.exit(1);
+          }
+          console.log("ok: tag and all 6 version sources + cli->client dep at " + want);
+          NODE
 
       # The dist came over the wire from another job and nothing is installed here to rebuild
       # it, so verify the payload is a complete build before it becomes a published version.
