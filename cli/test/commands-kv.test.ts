@@ -1,6 +1,7 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AgentKVError, AgentKVServiceError } from "@agentkv/client";
 import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
 import { runListKeys } from "../src/commands/kv";
@@ -440,5 +441,50 @@ describe("runListKeys — pagination (list-keys)", () => {
     });
     expect(code).toBe(0);
     expect(client.listKeys).toHaveBeenCalledWith({ limit: 3 });
+  });
+});
+
+// The worker puts its GENERIC message in `error` and the ACTIONABLE detail in `hint`,
+// so a CLI that prints only `message` tells the operator "invalid key" without saying
+// WHICH rule the key broke. `printError` has always accepted a hint; mapError now
+// passes it.
+describe("mapError — the worker's hint reaches stderr", () => {
+  it("prints the hint from an AgentKVServiceError", async () => {
+    const err: string[] = [];
+    const code = await runCli(["get", "bad key"], {
+      client: fakeClient({
+        get: vi.fn(async () => {
+          throw new AgentKVServiceError(
+            "AgentKV 400: invalid key",
+            "invalid_key",
+            400,
+            "key must match [A-Za-z0-9._:-]{1,200}",
+          );
+        }),
+      }) as any,
+      stdout: () => {},
+      stderr: (s) => err.push(s),
+    });
+    expect(code).not.toBe(0);
+    const e = JSON.parse(err.join(""));
+    expect(e.code).toBe("invalid_key");
+    expect(e.hint).toBe("key must match [A-Za-z0-9._:-]{1,200}");
+  });
+
+  it("omits the hint key entirely for a client-side AgentKVError (no hint to give)", async () => {
+    const err: string[] = [];
+    const code = await runCli(["get", "k"], {
+      client: fakeClient({
+        get: vi.fn(async () => {
+          throw new AgentKVError("no signer configured", "no_signer", 0);
+        }),
+      }) as any,
+      stdout: () => {},
+      stderr: (s) => err.push(s),
+    });
+    expect(code).not.toBe(0);
+    const e = JSON.parse(err.join(""));
+    expect(e.code).toBe("no_signer");
+    expect("hint" in e).toBe(false); // not `"hint": undefined`
   });
 });

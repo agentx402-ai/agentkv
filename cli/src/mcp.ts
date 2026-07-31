@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { AgentKVError, AgentKVServiceError } from "@agentkv/client";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -16,12 +17,36 @@ import {
 } from "./secrets.js";
 import { VERSION } from "./version.js";
 
-// Structured tool-error envelope, shared by every secret tool so the {error,code}
-// shape stays consistent — callers/models key on `code`.
-const toolError = (error: string, code: string) => ({
+// Structured tool-error envelope, shared by every secret tool so the {error,code,hint}
+// shape stays consistent — callers/models key on `code`. Same shape (and same optional
+// `hint`) as the CLI's printError, so an operator and a model see identical fields.
+const toolError = (error: string, code: string, hint?: string) => ({
   isError: true as const,
-  content: [{ type: "text" as const, text: JSON.stringify({ error, code }) }],
+  content: [
+    { type: "text" as const, text: JSON.stringify({ error, code, ...(hint ? { hint } : {}) }) },
+  ],
 });
+
+/**
+ * Run a tool body that calls the SDK, mapping a thrown `AgentKVError` into the envelope
+ * above. Without this the MCP SDK flattens the throw to a bare message string, so a model
+ * loses BOTH the `code` it branches on and the worker's actionable `hint` — it sees
+ * "AgentKV 400: invalid key" with no way to learn which rule the key broke. Anything that
+ * is not an SDK error still propagates (a genuine bug should not be dressed up as a
+ * structured refusal).
+ */
+async function withSdkErrors<T>(fn: () => Promise<T>): Promise<T | ReturnType<typeof toolError>> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof AgentKVError) {
+      // Only a response-mapped error carries `hint`; a client-side throw (invalid_config,
+      // no_signer, …) is the bare base class.
+      return toolError(e.message, e.code, e instanceof AgentKVServiceError ? e.hint : undefined);
+    }
+    throw e;
+  }
+}
 
 export function buildMcpServer(
   client: {
@@ -87,20 +112,21 @@ export function buildMcpServer(
       idempotentHint: false,
       openWorldHint: true,
     },
-    async (args) => ({
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(
-            await client.set(args.key, args.value, {
-              ttlDays: args.ttl_days,
-              strictTtl: args.strict_ttl,
-              idempotencyKey: args.idempotency_key,
-            }),
-          ),
-        },
-      ],
-    }),
+    async (args) =>
+      withSdkErrors(async () => ({
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              await client.set(args.key, args.value, {
+                ttlDays: args.ttl_days,
+                strictTtl: args.strict_ttl,
+                idempotencyKey: args.idempotency_key,
+              }),
+            ),
+          },
+        ],
+      })),
   );
 
   server.tool(
@@ -136,19 +162,20 @@ export function buildMcpServer(
       idempotentHint: false,
       openWorldHint: true,
     },
-    async (args) => ({
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(
-            await client.get(
-              args.key,
-              args.idempotency_key ? { idempotencyKey: args.idempotency_key } : {},
+    async (args) =>
+      withSdkErrors(async () => ({
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              await client.get(
+                args.key,
+                args.idempotency_key ? { idempotencyKey: args.idempotency_key } : {},
+              ),
             ),
-          ),
-        },
-      ],
-    }),
+          },
+        ],
+      })),
   );
 
   server.tool(
@@ -162,9 +189,10 @@ export function buildMcpServer(
       idempotentHint: true,
       openWorldHint: true,
     },
-    async (args) => ({
-      content: [{ type: "text" as const, text: JSON.stringify(await client.delete(args.key)) }],
-    }),
+    async (args) =>
+      withSdkErrors(async () => ({
+        content: [{ type: "text" as const, text: JSON.stringify(await client.delete(args.key)) }],
+      })),
   );
 
   server.tool(
@@ -191,11 +219,11 @@ export function buildMcpServer(
           "account_mode",
         );
       }
-      return {
+      return withSdkErrors(async () => ({
         content: [
           { type: "text" as const, text: JSON.stringify(await client.deposit(args.amount_usd)) },
         ],
-      };
+      }));
     },
   );
 
@@ -204,11 +232,12 @@ export function buildMcpServer(
     "Read the current credit balance (free)",
     {},
     { title: "Read balance", readOnlyHint: true, openWorldHint: true },
-    async () => ({
-      content: [
-        { type: "text" as const, text: JSON.stringify({ balance: await client.balance() }) },
-      ],
-    }),
+    async () =>
+      withSdkErrors(async () => ({
+        content: [
+          { type: "text" as const, text: JSON.stringify({ balance: await client.balance() }) },
+        ],
+      })),
   );
 
   server.tool(
@@ -302,10 +331,11 @@ export function buildMcpServer(
       limit: z.number().optional().describe("Max keys per page"),
     },
     { title: "List keys", readOnlyHint: true, openWorldHint: true },
-    async (args) => {
-      const res = await client.listKeys({ cursor: args.cursor ?? null, limit: args.limit });
-      return { content: [{ type: "text" as const, text: JSON.stringify(res) }] };
-    },
+    async (args) =>
+      withSdkErrors(async () => {
+        const res = await client.listKeys({ cursor: args.cursor ?? null, limit: args.limit });
+        return { content: [{ type: "text" as const, text: JSON.stringify(res) }] };
+      }),
   );
 
   // --- LLM-free secret tools: the plaintext value never enters the model context ---
@@ -334,12 +364,14 @@ export function buildMcpServer(
     async (args) => {
       const r = readEnvSecret(args.env_var);
       if (!r.ok) return toolError(r.error, r.code);
-      const res = await client.set(args.key, r.value, {
-        ttlDays: args.ttl_days,
-        strictTtl: args.strict_ttl,
-        idempotencyKey: args.idempotency_key,
+      return withSdkErrors(async () => {
+        const res = await client.set(args.key, r.value, {
+          ttlDays: args.ttl_days,
+          strictTtl: args.strict_ttl,
+          idempotencyKey: args.idempotency_key,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(res) }] };
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify(res) }] };
     },
   );
 
@@ -364,12 +396,14 @@ export function buildMcpServer(
     async (args) => {
       const r = readFileSecret(args.path, { trim: args.trim });
       if (!r.ok) return toolError(r.error, r.code);
-      const res = await client.set(args.key, r.value, {
-        ttlDays: args.ttl_days,
-        strictTtl: args.strict_ttl,
-        idempotencyKey: args.idempotency_key,
+      return withSdkErrors(async () => {
+        const res = await client.set(args.key, r.value, {
+          ttlDays: args.ttl_days,
+          strictTtl: args.strict_ttl,
+          idempotencyKey: args.idempotency_key,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(res) }] };
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify(res) }] };
     },
   );
 
@@ -401,37 +435,39 @@ export function buildMcpServer(
           "dest_exists",
         );
       }
-      const v = await client.get(
-        args.key,
-        args.idempotency_key ? { idempotencyKey: args.idempotency_key } : {},
-      );
-      if (v === null || v === undefined) {
-        return { content: [{ type: "text" as const, text: JSON.stringify({ found: false }) }] };
-      }
-      const text = typeof v === "string" ? v : JSON.stringify(v);
-      let written: { path: string; bytes: number };
-      try {
-        written = writeSecretFile(text, args.path);
-      } catch (e) {
-        // Distinct codes/messages so retry guidance is accurate (the old catch-all wrongly told
-        // the agent to "choose a fresh path" for ENOENT/EACCES, causing endless paid retries).
-        const code = (e as NodeJS.ErrnoException)?.code;
-        if (code === "EEXIST")
-          return toolError("destination already exists; choose a fresh path", "dest_exists");
-        if (code === "ENOENT")
-          return toolError("destination parent directory does not exist", "dest_parent_missing");
-        if (code === "EACCES" || code === "EPERM")
-          return toolError("destination is not writable", "dest_unwritable");
-        return toolError("could not write file", "write_failed");
-      }
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ found: true, path: written.path, bytes: written.bytes }),
-          },
-        ],
-      };
+      return withSdkErrors(async () => {
+        const v = await client.get(
+          args.key,
+          args.idempotency_key ? { idempotencyKey: args.idempotency_key } : {},
+        );
+        if (v === null || v === undefined) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ found: false }) }] };
+        }
+        const text = typeof v === "string" ? v : JSON.stringify(v);
+        let written: { path: string; bytes: number };
+        try {
+          written = writeSecretFile(text, args.path);
+        } catch (e) {
+          // Distinct codes/messages so retry guidance is accurate (the old catch-all wrongly told
+          // the agent to "choose a fresh path" for ENOENT/EACCES, causing endless paid retries).
+          const code = (e as NodeJS.ErrnoException)?.code;
+          if (code === "EEXIST")
+            return toolError("destination already exists; choose a fresh path", "dest_exists");
+          if (code === "ENOENT")
+            return toolError("destination parent directory does not exist", "dest_parent_missing");
+          if (code === "EACCES" || code === "EPERM")
+            return toolError("destination is not writable", "dest_unwritable");
+          return toolError("could not write file", "write_failed");
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ found: true, path: written.path, bytes: written.bytes }),
+            },
+          ],
+        };
+      });
     },
   );
 
@@ -469,29 +505,32 @@ export function buildMcpServer(
     async (args) => {
       const badEnv = forbiddenEnvKey([args.env_var, ...Object.keys(args.extra_env ?? {})]);
       if (badEnv) return toolError(`refusing process-hijack env var: ${badEnv}`, "forbidden_env");
-      const v = await client.get(
-        args.key,
-        args.idempotency_key ? { idempotencyKey: args.idempotency_key } : {},
-      );
-      if (v === null || v === undefined) return toolError(`key ${args.key} not found`, "not_found");
-      const secret = typeof v === "string" ? v : JSON.stringify(v);
-      let result: Awaited<ReturnType<typeof runWithSecret>>;
-      try {
-        result = await runWithSecret({
-          secret,
-          envVar: args.env_var,
-          command: args.command,
-          args: args.args,
-          cwd: args.cwd,
-          timeoutMs: args.timeout_ms,
-          extraEnv: args.extra_env,
-        });
-      } catch (e) {
-        // spawn-time failure (ENOENT for a bad command, EACCES on cwd, …) — return the
-        // structured envelope instead of letting the raw error become an SDK string.
-        return toolError(e instanceof Error ? e.message : String(e), "spawn_failed");
-      }
-      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      return withSdkErrors(async () => {
+        const v = await client.get(
+          args.key,
+          args.idempotency_key ? { idempotencyKey: args.idempotency_key } : {},
+        );
+        if (v === null || v === undefined)
+          return toolError(`key ${args.key} not found`, "not_found");
+        const secret = typeof v === "string" ? v : JSON.stringify(v);
+        let result: Awaited<ReturnType<typeof runWithSecret>>;
+        try {
+          result = await runWithSecret({
+            secret,
+            envVar: args.env_var,
+            command: args.command,
+            args: args.args,
+            cwd: args.cwd,
+            timeoutMs: args.timeout_ms,
+            extraEnv: args.extra_env,
+          });
+        } catch (e) {
+          // spawn-time failure (ENOENT for a bad command, EACCES on cwd, …) — return the
+          // structured envelope instead of letting the raw error become an SDK string.
+          return toolError(e instanceof Error ? e.message : String(e), "spawn_failed");
+        }
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      });
     },
   );
 
