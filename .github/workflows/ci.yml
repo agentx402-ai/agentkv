@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch: # allow manual re-runs (e.g. to get a green default-branch run on demand)
   pull_request:
   push:
     branches: [main]

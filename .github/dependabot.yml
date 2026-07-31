@@ -9,13 +9,18 @@ updates:
       dev-dependencies:
         dependency-type: "development"
     ignore:
-      # TypeScript 7 is a full rewrite whose compiler internals the bundler reads,
-      # so a major bump breaks `npm run build` on every platform:
-      #   TypeError: Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')
-      # It also blocked four unrelated dev bumps grouped alongside it (PR #9).
-      # Adopt TS majors deliberately, upgrading the build toolchain in the same PR —
-      # minor and patch updates still flow through normally.
-      - dependency-name: "typescript"
+      # Skip routine major bumps across the board — they are breaking and are adopted
+      # deliberately, not auto-PR'd. Minor, patch, AND Dependabot security updates still
+      # flow: `ignore` only suppresses version-update majors, never security updates.
+      # Two majors this repo is concretely exposed to:
+      #   - zod v4 vs. the MCP SDK's zod-3 requirement (this repo carries that same
+      #     zod ^3 + @modelcontextprotocol/sdk pair).
+      #   - TypeScript 7 is a full rewrite whose compiler internals the bundler reads, so
+      #     a major bump breaks `npm run build` on every platform:
+      #       TypeError: Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')
+      #     It also blocked four unrelated dev bumps grouped alongside it (PR #9).
+      # Adopt a major deliberately, upgrading the toolchain in the same PR.
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"

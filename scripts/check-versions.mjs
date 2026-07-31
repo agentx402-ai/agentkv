@@ -2,6 +2,8 @@
 // Usage:
 //   node scripts/check-versions.mjs           # all sources agree with each other (CI `versions` job)
 //   node scripts/check-versions.mjs v0.2.3    # ...and with the given release tag — manual/local use
+//   node scripts/check-versions.mjs ""        # REJECTED (exit 1): an empty tag is a caller bug,
+//                                             # never a request for the sources-only mode
 //
 // ci.yml's `versions` job is this script's only automated caller on this branch, and it always
 // runs with no tag argument. publish.yml does NOT call this script — it carries its own separate
@@ -10,7 +12,11 @@
 // workflow here.
 import { readFileSync } from "node:fs";
 
-const read = (p) => readFileSync(p, "utf8");
+// Sources resolve relative to the repo root (this file's parent), not the process cwd, so the
+// answer is the same run by hand from client/ or cli/ as from CI's checkout root. The tag mode
+// above is documented as the local pre-release check, and reading cwd-relative made that crash
+// with a bare ENOENT anywhere but the root.
+const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 const ver = (p) => JSON.parse(read(p)).version;
 const konst = (p) => (read(p).match(/VERSION = "([^"]+)"/) || [])[1];
 
@@ -33,12 +39,25 @@ if (dep !== `^${v.clientPkg}`) {
   console.error(`::error::cli dependency on @agentkv/client (${dep}) != ^${v.clientPkg}`);
   process.exit(1);
 }
-// Falsy (absent OR empty) means "no tag to check" — this also runs as a source-agreement-only
-// check with nothing to compare against a tag. ci.yml's `versions` job is what actually relies
-// on this: it always calls the script with no argument (`argv[2]` is undefined), so it only
-// ever exercises this branch. The empty-string case is accepted the same way for a caller that
-// resolves a tag dynamically and might come up empty; nothing on this branch currently does that.
+// ABSENT argument = "no tag to check": run as a source-agreement-only check. ci.yml's
+// `versions` job is what relies on that — it always calls with no argument (`argv[2]` is
+// undefined), so it only ever exercises this branch.
+//
+// An EXPLICITLY EMPTY argument is different, and must NOT be lumped in with it. It means the
+// caller TRIED to resolve a release tag and came up empty. Treating that as "no tag" silently
+// downgrades a release-time tag check into the weaker sources-only check — and that check
+// passes when every source agrees with every other source at the WRONG version, which is
+// exactly the drift a tag check exists to catch. A release guard must fail CLOSED, so an
+// empty or whitespace-only argument is an error, not a mode.
+//   (Deliberately not byte-identical to the sibling agentscout script on this point: there,
+//   publish.yml calls the equivalent guard behind a `^v[0-9]+\.[0-9]+\.[0-9]+…` tag validation.
+//   Here publish.yml carries its own inline guard and does not call this script at all, so no
+//   automated caller passes a tag today — this closes the hole against a FUTURE one.)
 const tag = process.argv[2];
+if (tag !== undefined && tag.trim() === "") {
+  console.error("::error::empty tag argument — the caller failed to resolve a release tag");
+  process.exit(1);
+}
 if (tag && tag.replace(/^v/, "") !== uniq[0]) {
   console.error(
     `::error::release tag ${tag} does not match the version sources (${uniq[0]}) — ` +
