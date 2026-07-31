@@ -13,14 +13,18 @@ import { SpendCapError } from "../src/types";
 const PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 const endpoint = "https://api.agentx402.ai";
 
-// A valid v2 PAYMENT-REQUIRED challenge for a write op (op price = $0.01).
+// A valid v2 PAYMENT-REQUIRED challenge for a write op (op price = $0.005).
 // SHAPE SOURCE OF TRUTH: the backend's x402 `requirements()` builder. The two packages
 // can't share an import (like the duplicated chainIdFromCaip2), so this fixture is kept
 // in sync BY HAND. The worker emits exactly { scheme, network, asset, amount, payTo,
 // maxTimeoutSeconds (= MAX_TIMEOUT_SECONDS = 600), extra:{name,version} } — no `resource`,
 // no `maxAmountRequired`. `resource` below is retained deliberately as an EXTRA field the
 // worker never sends, to prove the client tolerates/ignores unknown requirement fields.
-function challengeHeader(amountAtomic = 10000): string {
+// Default = WRITE_PRICE_ATOMIC (5_000 = $0.005), the price the worker actually quotes for a
+// `set`. It must stay at (or below) the client's pinned X402_WRITE_USD ceiling: these fixtures
+// exercise prepay ROUTING (top-off vs pay-per-op), and an invented above-price quote would now
+// be refused before signing by the authorized-ceiling guard, masking the routing behavior.
+function challengeHeader(amountAtomic = 5000): string {
   return btoa(
     JSON.stringify({
       x402Version: 2,
@@ -371,7 +375,7 @@ describe("prepay: PAYG default unchanged (c)", () => {
           JSON.stringify({ error: "payment required", code: "payment_required" }),
           {
             status: 402,
-            headers: { "PAYMENT-REQUIRED": challengeHeader(10000) },
+            headers: { "PAYMENT-REQUIRED": challengeHeader(5000) },
           },
         );
       }
@@ -383,7 +387,7 @@ describe("prepay: PAYG default unchanged (c)", () => {
 
     const pays = paymentCalls(calls);
     expect(pays).toHaveLength(1);
-    expect(pays[0].paymentValue).toBe("10000"); // op price ($0.01), NOT a top-off
+    expect(pays[0].paymentValue).toBe("5000"); // op price ($0.005), NOT a top-off
   });
 });
 
@@ -400,7 +404,7 @@ describe("prepay: hard-402 fallback pays a top-off (d)", () => {
           {
             status: 402,
             headers: {
-              "PAYMENT-REQUIRED": challengeHeader(10000),
+              "PAYMENT-REQUIRED": challengeHeader(5000),
               "X-AgentKV-Credits-Remaining": "0",
             },
           },
@@ -444,7 +448,7 @@ describe("prepay: an in-flight top-off is reserved against the session cap (conc
           {
             status: 402,
             headers: {
-              "PAYMENT-REQUIRED": challengeHeader(10000),
+              "PAYMENT-REQUIRED": challengeHeader(5000),
               "X-AgentKV-Credits-Remaining": "0",
             },
           },
@@ -527,7 +531,7 @@ describe("prepay: per-op cap does not block a top-off (e)", () => {
           {
             status: 402,
             headers: {
-              "PAYMENT-REQUIRED": challengeHeader(10000),
+              "PAYMENT-REQUIRED": challengeHeader(5000),
               "X-AgentKV-Credits-Remaining": "5000",
             },
           },
@@ -549,9 +553,9 @@ describe("prepay: per-op cap does not block a top-off (e)", () => {
 
     await kv.set("session", "v");
     const pays = paymentCalls(calls);
-    // Downgrade: paid the op price ($0.01), NOT the $20 top-off, and did not throw.
+    // Downgrade: paid the op price ($0.005), NOT the $20 top-off, and did not throw.
     expect(pays).toHaveLength(1);
-    expect(pays[0].paymentValue).toBe("10000");
+    expect(pays[0].paymentValue).toBe("5000");
   });
 });
 
@@ -804,7 +808,7 @@ describe("prepay: proactive top-off session-spend accounting (L3)", () => {
           {
             status: 402,
             headers: {
-              "PAYMENT-REQUIRED": challengeHeader(10000),
+              "PAYMENT-REQUIRED": challengeHeader(5000),
               "X-AgentKV-Credits-Remaining": "0",
             },
           },
@@ -840,7 +844,7 @@ describe("prepay: proactive top-off session-spend accounting (L3)", () => {
           {
             status: 402,
             headers: {
-              "PAYMENT-REQUIRED": challengeHeader(10000),
+              "PAYMENT-REQUIRED": challengeHeader(5000),
               "X-AgentKV-Credits-Remaining": "0",
             },
           },
@@ -937,7 +941,7 @@ describe("prepay: hard-402 single-flight (tryClaimTopoffOnFault)", () => {
         return new Response(JSON.stringify({ error: "x", code: "payment_required" }), {
           status: 402,
           headers: {
-            "PAYMENT-REQUIRED": challengeHeader(10000),
+            "PAYMENT-REQUIRED": challengeHeader(5000),
             "X-AgentKV-Credits-Remaining": "0",
           },
         });
@@ -954,10 +958,12 @@ describe("prepay: hard-402 single-flight (tryClaimTopoffOnFault)", () => {
     const kv = new AgentKV({ privateKey: PK, endpoint, prepay: { watermark: 10, topoff: 20 } });
     await Promise.all([kv.set("a", "1"), kv.set("b", "2")]);
 
+    // Sort NUMERICALLY: these are atomic-amount strings, and a default lexicographic sort
+    // orders "20000000" before "5000", making the expectation read backwards.
     const values = paymentCalls(calls)
-      .map((c) => c.paymentValue)
-      .sort();
-    expect(values).toEqual(["10000", "20000000"]); // exactly one op-price, one $20 top-off
+      .map((c) => Number(c.paymentValue))
+      .sort((a, b) => a - b);
+    expect(values).toEqual([5000, 20_000_000]); // exactly one op-price, one $20 top-off
   });
 });
 

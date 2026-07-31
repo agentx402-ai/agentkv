@@ -1,7 +1,7 @@
 // client/src/index.ts
 export const VERSION = "0.3.1";
 
-import { fetchWithRetry } from "@agentx402-ai/core";
+import { assertFiniteUsd, fetchWithRetry, SpendLedger } from "@agentx402-ai/core";
 import { getAddress, hexToBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { isAccountKeyFormat } from "./account";
@@ -29,6 +29,7 @@ import {
   type DeleteResult,
   type DepositResult,
   type GetOptions,
+  kvErrorFromResponse,
   type OpInlineRequest,
   type OpInlineResponse,
   type SetOptions,
@@ -56,7 +57,17 @@ export type {
   TopoffPayerRequest,
   UsageBlock,
 } from "./types";
-export { AgentKVError, SpendCapError } from "./types";
+// The error taxonomy. `AgentKVServiceError` (worker responses, carries `hint`),
+// the `AgentKVErrorCode` union callers switch on, and the shared response mapper —
+// exported so `cli/` and the MCP server map worker failures exactly as the SDK does.
+export {
+  AgentKVError,
+  type AgentKVErrorCode,
+  AgentKVServiceError,
+  AgentXError,
+  kvErrorFromResponse,
+  SpendCapError,
+} from "./types";
 
 // Additive `/v1` path prefix (the backend registers every route at both its
 // legacy path and this `/v1` sibling, pointing at the SAME handler). The client
@@ -93,6 +104,22 @@ export const CREDIT_VALUE_USD = 0.0001;
 export const ACCOUNT_READ_USD = 0.0003; // READ_COST=3 credits × $0.0001/credit
 export const ACCOUNT_WRITE_USD = 0.0005; // WRITE_COST=5 credits × $0.0001/credit
 
+// Pinned WALLET-mode (x402) op prices in USD — the per-op AUTHORIZED CEILING. These are the
+// prices the server itself quotes on a 402, mirroring the worker's READ_PRICE_ATOMIC (3_000)
+// and WRITE_PRICE_ATOMIC (5_000). `authorized-ceiling.test.ts` pins them to that derivation
+// (NOT pricing.test.ts, which covers the separate CREDIT costs), and the worker's own
+// pricing-constants test pins the other half.
+//
+// BECAUSE these are a CEILING, a price INCREASE must reach callers BEFORE the worker quotes
+// it: an un-updated client refuses the new, honest 402 as a SpendCapError. Ship the SDK first,
+// then the worker price. (Pinning BELOW the server's real quote breaks every paid op.)
+export const X402_READ_USD = 0.003;
+export const X402_WRITE_USD = 0.005;
+
+// Float/rounding slack (USD, ~1 atomic USDC) for the authorized-ceiling comparison, so an
+// exact honest quote is never refused by sub-atomic IEEE-754 error.
+const PRICE_EPS = 0.000001;
+
 /**
  * Built-in ceiling on a SERVER-QUOTED per-op price when no `maxSpendUsd` is configured.
  * The advertised op price is ~$0.005; without this, a compromised or spoofed worker could
@@ -126,15 +153,11 @@ export function toWholeAtomicUsd(amountUsd: number): number | null {
  * NaN-capped client also skipped the built-in DEFAULT_MAX_OP_USD ceiling and would sign
  * a spoofed $1000 quote that an UNCONFIGURED client rejects.
  */
+// Delegates the RULE to core (which raises AgentXError — the very class `AgentKVError` aliases,
+// so an existing `instanceof AgentKVError` still matches) and keeps returning the value, since
+// the call sites assign the validated cap straight through.
 function assertCapOption(v: number | undefined, name: string): number | undefined {
-  if (v === undefined) return undefined;
-  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-    throw new AgentKVError(
-      `${name} must be a finite number >= 0 (omit it for no cap; got ${String(v)})`,
-      "invalid_config",
-      0,
-    );
-  }
+  assertFiniteUsd(v, name);
   return v;
 }
 
@@ -165,16 +188,26 @@ export class AgentKV {
   private _ikm?: Uint8Array;
   private _km?: KeyMaterial;
   private _kmPromise?: Promise<KeyMaterial>;
-  private sessionSpentUsd = 0;
   /**
-   * USD authorized by ops that have passed the session-cap check but not yet settled.
-   * `recordSpend` only increments AFTER the paid round-trip, so without this, N concurrent
-   * ops all check against the same stale counter, all pass, and all sign real EIP-3009
-   * authorizations — the cumulative cap provided NO bound under concurrency. Reserved
-   * synchronously at the check (no await in between) and released when the op settles or
-   * fails; settled amounts move to `sessionSpentUsd` via `recordSpend`.
+   * The spend bounds, including the in-flight reservation that makes the cumulative cap hold
+   * under concurrency: settlement is only known after a paid round-trip, so a ledger counting
+   * only settled spend hands concurrent ops the same stale total and each one signs. Shared
+   * with the other service SDKs via core, which already owned the SpendCapError it raises —
+   * both repos had kept their own copy under different names, and both drifted.
    */
-  private sessionReservedUsd = 0;
+  private readonly ledger: SpendLedger;
+
+  // Read-only views onto the ledger, kept because the white-box spend-accounting tests read
+  // these names directly (`(kv as { sessionSpentUsd }).sessionSpentUsd`) to prove a top-off is
+  // counted exactly once and that an in-flight one is visible to a concurrent check. Reads
+  // only — the ledger owns every mutation.
+  private get sessionSpentUsd(): number {
+    return this.ledger.settled;
+  }
+
+  private get sessionReservedUsd(): number {
+    return this.ledger.inFlight;
+  }
 
   // --- Discounted Prepay state (opt-in; undefined => Pay-as-you-go, unchanged) ---
   private readonly prepay?: { watermark: number; topoff: number; async?: boolean };
@@ -229,6 +262,11 @@ export class AgentKV {
     this.network = opts.network ?? DEFAULT_NETWORK;
     this.maxSpendUsd = assertCapOption(opts.maxSpendUsd, "maxSpendUsd");
     this.maxSessionSpendUsd = assertCapOption(opts.maxSessionSpendUsd, "maxSessionSpendUsd");
+    // Caps validated just above, so the ledger's identical re-check never fires.
+    this.ledger = new SpendLedger({
+      maxSpendUsd: this.maxSpendUsd,
+      maxSessionSpendUsd: this.maxSessionSpendUsd,
+    });
     // retries: NaN would make the retry condition always-false (silently no retries) and
     // Infinity would survive the clamp (unbounded loop) — reject non-finite; negatives
     // still clamp to 0 as before.
@@ -507,28 +545,18 @@ export class AgentKV {
     return decrypt(km.value, packed, hashKey(km.mac, key));
   }
 
+  // The next four delegate to the shared ledger. They stay as named methods because their
+  // call sites and the white-box money tests already use these names; only the arithmetic
+  // moved to core, which already owned the SpendCapError they raise.
   private assertSpend(usd: number, opts: { bypassPerOpCap?: boolean } = {}): void {
-    // Top-offs pass bypassPerOpCap: a credit purchase is not a per-op charge, so
-    // the per-call cap (which bounds individual pay-per-op spend) must not gate it
-    // — mirroring topoffFitsSessionCap() on the synchronous top-off paths.
-    // Negated <= (not >): a non-finite operand then fails CLOSED instead of open.
-    if (!opts.bypassPerOpCap && this.maxSpendUsd !== undefined && !(usd <= this.maxSpendUsd)) {
-      throw new SpendCapError(`spend $${usd} exceeds per-call cap $${this.maxSpendUsd}`);
-    }
-    // Negated <= (not >): a non-finite operand then fails CLOSED instead of open.
-    if (
-      this.maxSessionSpendUsd !== undefined &&
-      !(this.sessionSpentUsd + this.sessionReservedUsd + usd <= this.maxSessionSpendUsd)
-    ) {
-      throw new SpendCapError(
-        `spend $${usd} would exceed session cap $${this.maxSessionSpendUsd} ` +
-          `(spent $${this.sessionSpentUsd}, in flight $${this.sessionReservedUsd})`,
-      );
-    }
+    // Top-offs pass bypassPerOpCap: a credit purchase is not a per-op charge, so the per-call
+    // cap (which bounds individual pay-per-op spend) must not gate it — mirroring
+    // topoffFitsSessionCap() on the synchronous top-off paths. The cumulative cap still binds.
+    this.ledger.assertSpend(usd, { bypassPerCallCap: opts.bypassPerOpCap });
   }
 
   private recordSpend(usd: number): void {
-    this.sessionSpentUsd += usd;
+    this.ledger.record(usd);
   }
 
   /**
@@ -537,17 +565,14 @@ export class AgentKV {
    * cannot leak budget back.
    */
   private reserveSession(usd: number): () => void {
-    this.sessionReservedUsd += usd;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.sessionReservedUsd -= usd;
-    };
+    return this.ledger.reserve(usd);
   }
 
   /** `assertSpend` + a synchronous reservation. The caller MUST release in a `finally`. */
   private assertAndReserveSpend(usd: number, opts: { bypassPerOpCap?: boolean } = {}): () => void {
+    // Kept as check-then-reserve through this class's own two methods rather than the ledger's
+    // combined call: nothing awaits between them, so it is equivalent, and it keeps one place
+    // where the bypass is translated for every caller of either method.
     this.assertSpend(usd, opts);
     return this.reserveSession(usd);
   }
@@ -878,6 +903,20 @@ export class AgentKV {
       url: string;
       idempotencyKey: string;
       creditCostUsd: number;
+      /**
+       * Caller-authorized USD ceiling for the WALLET (x402) op price: the pinned price for this
+       * verb. A 402 quoting more than this (beyond float slack) is refused BEFORE signing, so a
+       * lying/spoofed/MITM'd server cannot inflate the amount — and unlike `maxSpendUsd` this
+       * holds in the DEFAULT config, where the only other guard is the coarse DEFAULT_MAX_OP_USD
+       * backstop (10x the real op price). Does NOT apply to the top-off branch, which
+       * legitimately pays >= $1 for a credit purchase rather than this op's price.
+       *
+       * Required but nullable ON PURPOSE: a new verb must STATE its ceiling, so the decision is
+       * conscious, but may state `undefined` when no canonical price is pinned — which falls
+       * back to the DEFAULT_MAX_OP_USD backstop rather than forcing the author to invent a
+       * number. Writing a guessed ceiling here would be worse than declaring none.
+       */
+      authorizedCeilingUsd: number | undefined;
       label: string;
       buildRequest: (headers: Record<string, string>) => RequestInit;
       parseSuccess: (res: Response) => Promise<T>;
@@ -1115,6 +1154,33 @@ export class AgentKV {
         // per-op ceiling by design, so reserve directly rather than re-asserting through it.
         release = this.reserveSession(usd);
       } else {
+        // Authorized-ceiling check (primary defense), BEFORE any signature is produced: refuse a
+        // server quoting more than this verb's pinned price. Holds even in the default
+        // no-maxSpendUsd config, where assertOpPriceCeiling alone would wave through anything up
+        // to DEFAULT_MAX_OP_USD — 10x a real $0.005 write. Deliberately NOT applied to the
+        // topoffHere branch above: a top-off is a >= $1 credit purchase, not this op's price.
+        //
+        // A non-finite ceiling is a HARD refusal rather than a vacuous `usd > NaN` that always
+        // passes. The value is a module constant today, so this only fires on a bug — but this
+        // is the last gate before a signature, so it refuses rather than trusts.
+        if (spec.authorizedCeilingUsd !== undefined) {
+          if (!Number.isFinite(spec.authorizedCeilingUsd)) {
+            throw new SpendCapError(
+              `authorized ceiling $${spec.authorizedCeilingUsd} is not a finite amount; refusing to sign`,
+            );
+          }
+          if (!(usd <= spec.authorizedCeilingUsd + PRICE_EPS)) {
+            throw new SpendCapError(
+              `server quoted $${usd} but the client only authorized $${spec.authorizedCeilingUsd} ` +
+                "(the pinned op price); refusing to sign",
+            );
+          }
+        }
+        // Backstop, and the ONLY op-price bound for a verb that declares no ceiling. For today's
+        // two verbs it cannot bind: both pinned ceilings ($0.003/$0.005) are an order of magnitude
+        // under DEFAULT_MAX_OP_USD ($0.05), so the check above always refuses first. Kept because
+        // it is what a future `authorizedCeilingUsd: undefined` verb falls back to — and
+        // DEFAULT_MAX_OP_USD stays live regardless on the inline-payer path (inlineOpCeilingUsd).
         this.assertOpPriceCeiling(usd);
         release = this.assertAndReserveSpend(usd);
       }
@@ -1207,6 +1273,7 @@ export class AgentKV {
         url,
         idempotencyKey,
         creditCostUsd: ACCOUNT_WRITE_USD,
+        authorizedCeilingUsd: X402_WRITE_USD,
         label: "set failed",
         buildRequest: (headers) => ({
           method: "POST",
@@ -1285,6 +1352,7 @@ export class AgentKV {
         url,
         idempotencyKey,
         creditCostUsd: ACCOUNT_READ_USD,
+        authorizedCeilingUsd: X402_READ_USD,
         label: "get failed",
         buildRequest: (headers) => ({ method: "GET", headers }),
         parseSuccess: async (res) => parseBody(await res.text()),
@@ -1747,18 +1815,14 @@ export class AgentKV {
     }
   }
 
-  /** Shared by `asError` (a real `Response`) and the `opInlinePayer` path (a plain `{status,body}`). */
+  /**
+   * Shared by `asError` (a real `Response`) and the `opInlinePayer` path (a plain
+   * `{status,body}`). A thin delegate to the exported `kvErrorFromResponse` so the SDK,
+   * the CLI, and the MCP boundary all map worker responses through ONE implementation
+   * (it used to be inline here, and dropped the worker's `hint`).
+   */
   private errorFromBody(status: number, bodyText: string, fallback: string): Error {
-    let detail = fallback,
-      code = "request_failed";
-    try {
-      const body = JSON.parse(bodyText) as { error?: string; code?: string };
-      if (body?.error) detail = body.error;
-      if (body?.code) code = body.code;
-    } catch {
-      /* non-JSON */
-    }
-    return new AgentKVError(`AgentKV ${status}: ${detail}`, code, status);
+    return kvErrorFromResponse(status, bodyText, fallback);
   }
 
   private async asError(res: Response, fallback: string): Promise<Error> {

@@ -1,7 +1,7 @@
 import { mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentKVError, SpendCapError } from "@agentkv/client";
+import { AgentKVError, AgentKVServiceError, SpendCapError } from "@agentkv/client";
 import { parseFlags, UsageError } from "./args";
 import { runAccount } from "./commands/account";
 import { runCredits } from "./commands/credits";
@@ -124,7 +124,11 @@ function mapError(e: unknown, stderr: Writer): number {
     return EXIT.PAYMENT;
   }
   if (e instanceof AgentKVError) {
-    printError(stderr, e.code, e.message);
+    // Worker errors carry the actionable detail in `hint` (`error` is a generic
+    // canned message), so print it — without it the operator sees "invalid key"
+    // and not WHICH rule the key broke. Client-side throws are the bare base class
+    // and have no hint.
+    printError(stderr, e.code, e.message, e instanceof AgentKVServiceError ? e.hint : undefined);
     if (e.status === 404) return EXIT.NOT_FOUND;
     if (e.status === 402) return EXIT.PAYMENT; // a real out-of-funds 402 -> the payment exit code
     return EXIT.GENERIC;

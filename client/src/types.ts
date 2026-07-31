@@ -7,15 +7,25 @@
 // re-declares them, so `err instanceof AgentKVError` keeps working for
 // anything caught across this package boundary (see core/src/errors.ts and
 // core/test/errors.test.ts + client/test/errors.test.ts for the guarantee).
+//
+// The error taxonomy itself (the `hint`-carrying subclass, the code union, the
+// response mapper) lives in `./errors`; the two error classes are re-exported
+// through here as well so existing `from "./types"` imports keep resolving.
 
 export type { Signer, UsageBlock } from "@agentx402-ai/core";
 export {
-  AgentKVError,
   chainIdFromCaip2,
   EIP712_DOMAIN_NAME,
   EIP712_DOMAIN_VERSION,
-  SpendCapError,
 } from "@agentx402-ai/core";
+export {
+  AgentKVError,
+  type AgentKVErrorCode,
+  AgentKVServiceError,
+  AgentXError,
+  kvErrorFromResponse,
+  SpendCapError,
+} from "./errors";
 
 import type { Signer, UsageBlock } from "@agentx402-ai/core";
 
@@ -228,7 +238,13 @@ export interface DepositResult {
   balance: number;
 }
 
-/** Standard AgentKV error response body. */
+/**
+ * Standard AgentKV error response body. `code` is left as `string` rather than
+ * narrowed to `AgentKVErrorCode` so a worker code added ahead of an SDK release still
+ * describes a real body; the union enumerates the values it takes. `error` is the
+ * worker's GENERIC message and `hint` the actionable detail — `kvErrorFromResponse`
+ * carries both onto `AgentKVServiceError`.
+ */
 export interface ErrorBody {
   error: string;
   code: string;

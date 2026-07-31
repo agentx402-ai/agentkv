@@ -116,13 +116,18 @@ jobs:
 
       # A Release tagged v0.2.3 cut on a commit still carrying 0.2.2 would otherwise publish
       # 0.2.2 under that Release. The VERSION constants are compiled INTO the published
-      # bundles, so a drift there ships a package that misreports itself — check all five
+      # bundles and the plugin's .mcp.json pin decides which CLI actually runs for plugin
+      # users, so a drift there ships packages that misreport themselves — check all six
       # sources here, at the one moment it becomes irreversible, not only in CI.
       - name: Guard — the tag must match every version source (RELEASING.md)
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
+          # Deliberately an INLINE re-implementation rather than a call to
+          # scripts/check-versions.mjs (which ci.yml's `versions` job runs on every PR). Two
+          # independent implementations mean a bug — or an edit — in one cannot disable both
+          # the PR gate and the release-time gate at once. Keep the two in sync by hand.
           node -e '
             const fs = require("fs");
             const read = (p) => fs.readFileSync(p, "utf8");
@@ -135,8 +140,18 @@ jobs:
               clientConst: konst("client/src/index.ts"),
               cliConst: konst("cli/src/version.ts"),
               plugin: ver("plugin/agentkv/.claude-plugin/plugin.json"),
+              // The plugin RUNTIME pin — the sixth source, and the one this guard used to
+              // omit. Without it, a tag cut on a commit whose .mcp.json still pins the
+              // PREVIOUS cli version publishes cleanly and plugin users then npx the stale
+              // CLI: the lockstep would bind the declared version but not the one that
+              // actually runs.
+              mcpPin: (read("plugin/agentkv/.mcp.json").match(/"@agentkv\/cli@([^"]+)"/) || [])[1],
             };
-            const bad = Object.entries(v).filter(([, got]) => got !== want);
+            // Report a regex/parse miss as "(not found)" rather than letting JSON.stringify
+            // drop the undefined-valued key and print a bare {}.
+            const bad = Object.entries(v)
+              .filter(([, got]) => got !== want)
+              .map(([k, got]) => [k, got === undefined ? "(not found)" : got]);
             if (bad.length) {
               console.error("::error::tag " + process.env.TAG + " does not match: " + JSON.stringify(Object.fromEntries(bad)));
               process.exit(1);
@@ -146,7 +161,7 @@ jobs:
               console.error("::error::cli dependency on @agentkv/client (" + dep + ") != ^" + want);
               process.exit(1);
             }
-            console.log("ok: tag and all 5 version sources at " + want);
+            console.log("ok: tag and all 6 version sources at " + want);
           '
 
       # --ignore-scripts: a compromised transitive dep must not get arbitrary execution just
@@ -165,11 +180,15 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npm audit --audit-level=high || echo "::warning::dev-chain advisories present — see ci.yml for the blocking gate"
 
-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+      # The ONLY thing that crosses the privilege boundary. Everything else the tarballs need
+      # (package.json, README.md, LICENSE) is already in the publish job's checkout of the
+      # same tag; `files: ["dist"]` in both manifests means dist is the whole delta.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           # Two paths, so the artifact keeps the `client/`+`cli/` prefixes (upload-artifact
-          # takes the least common ancestor, which is the repo root for a multi-path upload).
+          # takes the least common ancestor, which is the repo root for a multi-path upload)
+          # and unpacks straight onto the publish job's checkout.
           path: |
             client/dist
             cli/dist
@@ -179,8 +198,10 @@ jobs:
           # on a 409 conflict.
           overwrite: true
           # The publish job consumes this immediately, so this only has to outlive a later
-          # "Re-run failed jobs" on a release that failed at the publish step — which reuses
-          # the run's existing artifact rather than rebuilding it.
+          # "Re-run failed jobs" on a release that failed in the publish job — which reuses
+          # the run's existing artifact rather than rebuilding it. Note that a re-run resumes
+          # at the START of the publish job, not at the step that failed; the publish steps
+          # carry their own already-published guard so a half-published release can finish.
           retention-days: 7
 
   # Privileged: holds trusted-publishing rights for both packages. Runs no dependency code.
@@ -217,9 +238,10 @@ jobs:
 
       - run: npm --version # publish provenance path needs an intact npm bundle
 
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dist
+          # Unpacks as client/dist + cli/dist onto the checkout of the same tag.
           path: .
 
       # This job, not the build job, is the one holding publishing rights, so it must
@@ -243,15 +265,82 @@ jobs:
       - name: Verify the downloaded artifact is a complete build
         run: |
           set -euo pipefail
-          # upload-artifact does not preserve file permissions, and cli's bin ships 0755 in
-          # the published tarball (verified against @agentkv/cli 0.2.2). npm re-chmods bins
-          # at install time, but the tarball should still match a local `npm pack`.
-          chmod +x cli/dist/cli.js
-          for f in client/dist/index.js client/dist/index.cjs client/dist/index.d.ts \
-                   client/dist/index.d.cts cli/dist/cli.js; do
-            [ -s "$f" ] || { echo "::error::missing or empty $f in the build artifact"; exit 1; }
-          done
-          # --ignore-scripts throughout: nothing third-party may execute in this job.
+          # Heredoc rather than `node -e '...'`: the graph walk below needs both quote
+          # characters in its regexes, which a single-quoted shell string cannot carry.
+          node - <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const fail = (m) => { console.error("::error::" + m); process.exit(1); };
+          // Fixed entry points: client's four `exports` targets and cli's `bin`.
+          const entries = [
+            "client/dist/index.js",
+            "client/dist/index.cjs",
+            "client/dist/index.d.ts",
+            "client/dist/index.d.cts",
+            "cli/dist/cli.js",
+          ];
+          for (const f of entries) {
+            if (!fs.existsSync(f) || fs.statSync(f).size === 0) {
+              fail("missing or empty " + f + " in the build artifact");
+            }
+          }
+          // cli/dist is CODE-SPLIT: cli.js statically imports ./chunk-<hash>.js and
+          // dynamically imports ./mcp-<hash>.js (cli/src/cli.ts does `await import("./mcp.js")`,
+          // and cli/tsup.config.ts leaves tsup's ESM `splitting` default on). Those names
+          // change with every build and so cannot be listed above. Walk the import graph
+          // instead — an upload that DROPPED or ZEROED a chunk would otherwise publish a CLI
+          // that dies with ERR_MODULE_NOT_FOUND on its first run, and only a new version
+          // could fix it. (Scope: this catches missing/empty, not a partially written file —
+          // download-artifact v8 fails on digest mismatch, which does.)
+          //
+          // TWO ASSUMPTIONS, true of tsup's output today and worth re-checking if it changes:
+          // only .js/.cjs are walked, so a SPLIT .d.ts graph would go unverified (dts bundling
+          // emits one file per entry today); and a resolved specifier is used verbatim, so an
+          // extensionless relative import would be reported missing (esbuild always emits the
+          // extension).
+          const seen = new Set();
+          const queue = entries.filter((f) => /\.c?js$/.test(f));
+          while (queue.length) {
+            const f = queue.pop();
+            if (seen.has(f)) continue;
+            seen.add(f);
+            const src = fs.readFileSync(f, "utf8");
+            const specs = new Set();
+            for (const re of [
+              /\bfrom\s*["'](\.[^"']+)["']/g,
+              /\bimport\s*\(?\s*["'](\.[^"']+)["']/g,
+              /\brequire\(\s*["'](\.[^"']+)["']/g,
+            ]) {
+              for (const m of src.matchAll(re)) specs.add(m[1]);
+            }
+            for (const s of specs) {
+              const t = path.posix.join(path.posix.dirname(f), s);
+              if (!fs.existsSync(t) || fs.statSync(t).size === 0) {
+                fail(f + " imports " + s + " — missing or empty in the build artifact");
+              }
+              queue.push(t);
+            }
+          }
+          console.log("ok: artifact is a closed module graph over " + seen.size + " file(s)");
+          NODE
+          # upload-artifact does not preserve the executable bit — every file arrives 0644.
+          # Restore it on ALL of cli/dist, not just the bin: tsup marks every output of a
+          # shebang-bannered entry executable, so a local build has cli.js AND both chunks at
+          # 0755. tar records each file's mode and npm keeps the exec bit in the tarball, so
+          # chmod'ing only cli.js publishes a tarball whose checksum differs from a local
+          # `npm pack` of the same build. The chunks are imported rather than exec'd, so this
+          # is about keeping the artifact path byte-reproducible against a local build, not
+          # about runtime behavior. (cli's bin ships 0755 in the published tarball — verified
+          # against @agentkv/cli 0.2.2 — and npm re-chmods bins at install time regardless.)
+          #   client/dist is deliberately NOT chmod'd: nothing in it is executable locally
+          #   either, npm normalizes it to 0644 both ways, and marking it 0755 here would
+          #   introduce exactly the mismatch this is removing for cli.
+          # Runs AFTER the completeness check above so a wholly missing artifact reports the
+          # intended "missing or empty …" annotation rather than a raw chmod error.
+          chmod 755 cli/dist/*.js
+          # --ignore-scripts throughout: nothing third-party may execute in this job (a
+          # prepack would otherwise invoke tsup). This resolves the workspaces exactly the
+          # way the publish steps below do, so what is checked here is what gets published.
           npm pack --dry-run --ignore-scripts -w client -w cli
 
       # Order matters: client before cli, since cli depends on it.
@@ -260,7 +349,24 @@ jobs:
       - name: Publish client (verbose — surfaces the OIDC exchange result)
         env:
           NPM_TAG: ${{ needs.build.outputs.npm_tag }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          # RE-RUN RECOVERY. client publishes before cli, so a cli-side failure (registry
+          # blip, rate limit) leaves client already on npm. A re-run restarts this job at its
+          # FIRST step, so without this guard the client publish below dies EEXIST and cli is
+          # never reached — the release stays half-published, and because a run always
+          # executes the workflow file at its own tag there is no in-tag fix. Skipping an
+          # already-published EXACT version lets the re-run finish the other half.
+          # Gated on run_attempt so a FIRST attempt stays strict: a version that already
+          # exists then is a genuine error (wrong tag, or someone else holds that version)
+          # and must still fail loudly rather than be silently skipped. `npm view` is an
+          # unauthenticated public read and needs no credential.
+          set -euo pipefail
+          VER="$(node -p "require('./client/package.json').version")"
+          if [ "${RUN_ATTEMPT:-1}" -gt 1 ] && npm view "@agentkv/client@$VER" version >/dev/null 2>&1; then
+            echo "::notice::@agentkv/client@$VER already published (run attempt $RUN_ATTEMPT) — skipping to cli."
+            exit 0
+          fi
           set +e
           npm publish -w client --provenance --ignore-scripts --tag "$NPM_TAG" --loglevel verbose 2>&1 | tee /tmp/pub-client.log
           CODE=${PIPESTATUS[0]}
@@ -272,7 +378,16 @@ jobs:
       - name: Publish cli (verbose — same OIDC diagnostics as client)
         env:
           NPM_TAG: ${{ needs.build.outputs.npm_tag }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          # Same re-run guard as the client step above, for symmetry: a run that published
+          # both and then failed in a later step re-runs to green instead of EEXIST.
+          set -euo pipefail
+          VER="$(node -p "require('./cli/package.json').version")"
+          if [ "${RUN_ATTEMPT:-1}" -gt 1 ] && npm view "@agentkv/cli@$VER" version >/dev/null 2>&1; then
+            echo "::notice::@agentkv/cli@$VER already published (run attempt $RUN_ATTEMPT) — nothing to do."
+            exit 0
+          fi
           set +e
           npm publish -w cli --provenance --ignore-scripts --tag "$NPM_TAG" --loglevel verbose 2>&1 | tee /tmp/pub-cli.log
           CODE=${PIPESTATUS[0]}
@@ -314,7 +429,10 @@ jobs:
              placeholder one; v7, used here, does not).
 
           3) "EEXIST" / "cannot publish over previously published version"
-             Version already published. Bump every source per RELEASING.md and re-tag.
+             Version already published. On a RE-RUN this is handled for you — the publish
+             steps skip an already-published exact version so a half-published release can
+             finish. Seeing it on the FIRST attempt means the version is genuinely taken:
+             bump every source per RELEASING.md and re-tag.
 
           NOTE: a release re-run replays the workflow file snapshotted at the tag, so a fix
           on main is ignored. To ship a workflow fix, move the tag or cut the next version.
