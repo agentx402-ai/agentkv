@@ -371,8 +371,9 @@ describe("account fund", () => {
   // A fixed payer wallet (deliberately separate from the configured account).
   const PAYER = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
   const PAYER_ADDR = privateKeyToAccount(PAYER as `0x${string}`).address;
-  // Another fixed payer for ambient/env tests (never --from-key) — constructed, not hand-typed.
+  // A second fixed payer, for the precedence test — constructed, not hand-typed.
   const AMBIENT = `0x${"c".repeat(64)}` as const;
+  const AMBIENT_ADDR = privateKeyToAccount(AMBIENT).address;
   const AK = `ak_${"a".repeat(64)}`;
   const ENC = `0x${"b".repeat(64)}`;
 
@@ -398,15 +399,19 @@ describe("account fund", () => {
     ).toString("base64");
   }
 
-  it("resolves payer (--from-key) + the env account, calls fundAccount, prints the result (payer key never logged)", async () => {
-    const env = tmpEnv({ AGENTKV_ACCOUNT_KEY: AK, AGENTKV_ENCRYPTION_KEY: ENC });
+  it("resolves payer (AGENTKV_PAYER_KEY) + the env account, calls fundAccount, prints the result (payer key never logged)", async () => {
+    const env = tmpEnv({
+      AGENTKV_ACCOUNT_KEY: AK,
+      AGENTKV_ENCRYPTION_KEY: ENC,
+      AGENTKV_PAYER_KEY: PAYER,
+    });
     try {
       const fundAccount = vi.fn(async (_signer: { address: string }, _usd: number) => ({
         credits_added: 50000,
         balance: 50000,
       }));
       const io = makeIo();
-      const code = await runCli(["account", "fund", "5", "--from-key", PAYER], {
+      const code = await runCli(["account", "fund", "5"], {
         client: { fundAccount } as any,
         env,
         stdout: io.stdout,
@@ -417,7 +422,7 @@ describe("account fund", () => {
       expect(fundAccount).toHaveBeenCalledOnce();
       const [payerArg, amountArg] = fundAccount.mock.calls[0];
       expect(amountArg).toBe(5);
-      // A viem signer built from --from-key (its address), NOT the account bearer.
+      // A viem signer built from AGENTKV_PAYER_KEY (its address), NOT the account bearer.
       expect(payerArg.address).toBe(PAYER_ADDR);
       // The raw payer key is NEVER emitted (stdout or stderr).
       expect(io.out.join("")).not.toContain(PAYER);
@@ -427,11 +432,15 @@ describe("account fund", () => {
     }
   });
 
-  it("resolves the payer from AGENTKV_PAYER_KEY when no --from-key is given", async () => {
+  // With the flag gone, env precedence is the ONLY way to aim the payment at a wallet other
+  // than the ambient one, so it is load-bearing: AGENTKV_PAYER_KEY must win over
+  // AGENTKV_PRIVATE_KEY, or `account fund` would spend real USDC from the wrong wallet.
+  it("AGENTKV_PAYER_KEY wins over AGENTKV_PRIVATE_KEY", async () => {
     const env = tmpEnv({
       AGENTKV_ACCOUNT_KEY: AK,
       AGENTKV_ENCRYPTION_KEY: ENC,
       AGENTKV_PAYER_KEY: PAYER,
+      AGENTKV_PRIVATE_KEY: AMBIENT,
     });
     try {
       const fundAccount = vi.fn(async (_signer: { address: string }, _usd: number) => ({
@@ -448,13 +457,43 @@ describe("account fund", () => {
       expect(code).toBe(0);
       expect(fundAccount).toHaveBeenCalledOnce();
       expect(fundAccount.mock.calls[0][0].address).toBe(PAYER_ADDR);
+      expect(fundAccount.mock.calls[0][0].address).not.toBe(AMBIENT_ADDR);
+    } finally {
+      clean(env);
+    }
+  });
+
+  // The flag that used to carry this key is GONE (argv is world-readable via `ps` /
+  // /proc/<pid>/cmdline and lands in shell history). It must fail with the env migration
+  // rather than a bare "unknown flag", and must never spend or echo the key it was handed.
+  it("--from-key is rejected with an actionable AGENTKV_PAYER_KEY migration (never echoes the key)", async () => {
+    const env = tmpEnv({ AGENTKV_ACCOUNT_KEY: AK, AGENTKV_ENCRYPTION_KEY: ENC });
+    try {
+      const fundAccount = vi.fn();
+      const io = makeIo();
+      const code = await runCli(["account", "fund", "5", "--from-key", PAYER], {
+        client: { fundAccount } as any,
+        env,
+        stdout: io.stdout,
+        stderr: io.stderr,
+      });
+      expect(code).toBe(2); // EXIT.USAGE
+      expect(io.errJson().code).toBe("usage");
+      const msg = io.errJson().error;
+      expect(msg).toMatch(/--from-key was removed/);
+      expect(msg).toMatch(/AGENTKV_PAYER_KEY/); // names the replacement
+      expect(msg).not.toMatch(/unknown flag/); // not the generic typo error
+      expect(fundAccount).not.toHaveBeenCalled(); // no spend
+      // The value handed to the dead flag WAS a private key — never echo it.
+      expect(io.out.join("")).not.toContain(PAYER);
+      expect(io.err.join("")).not.toContain(PAYER);
     } finally {
       clean(env);
     }
   });
 
   it("builds a REAL account-mode client from the file + funds via /account/deposit (owner bearer + payer PAYMENT-SIGNATURE)", async () => {
-    const env = tmpEnv();
+    const env = tmpEnv({ AGENTKV_PAYER_KEY: PAYER });
     try {
       await runCli(["account", "new"], { env, stdout: () => {}, stderr: () => {} });
       const stored = peekStoredAccount(env)!;
@@ -477,7 +516,7 @@ describe("account fund", () => {
 
       const io = makeIo();
       // NO injected client: runAccount builds its own account-mode AgentKV from the file.
-      const code = await runCli(["account", "fund", "1", "--from-key", PAYER], {
+      const code = await runCli(["account", "fund", "1"], {
         env,
         stdout: io.stdout,
         stderr: io.stderr,
@@ -500,7 +539,7 @@ describe("account fund", () => {
     }
   });
 
-  it("missing payer (no --from-key / env / wallet.json) → no_payer, client not called", async () => {
+  it("missing payer (no env payer key / wallet.json) → no_payer, client not called", async () => {
     const env = tmpEnv({ AGENTKV_ACCOUNT_KEY: AK, AGENTKV_ENCRYPTION_KEY: ENC });
     try {
       const fundAccount = vi.fn();
@@ -520,11 +559,12 @@ describe("account fund", () => {
   });
 
   it("no account configured → no_account, client not called", async () => {
-    const env = tmpEnv(); // no AGENTKV_ACCOUNT_KEY, no account.json
+    // no AGENTKV_ACCOUNT_KEY, no account.json — a resolvable payer must not be enough
+    const env = tmpEnv({ AGENTKV_PAYER_KEY: PAYER });
     try {
       const fundAccount = vi.fn();
       const io = makeIo();
-      const code = await runCli(["account", "fund", "5", "--from-key", PAYER], {
+      const code = await runCli(["account", "fund", "5"], {
         client: { fundAccount } as any,
         env,
         stdout: io.stdout,
@@ -538,12 +578,18 @@ describe("account fund", () => {
     }
   });
 
-  it("a malformed --from-key → invalid_payer (USAGE), client not called", async () => {
-    const env = tmpEnv({ AGENTKV_ACCOUNT_KEY: AK, AGENTKV_ENCRYPTION_KEY: ENC });
+  // A malformed payer key THROWS rather than falling through to the next source — a typo
+  // must not quietly spend from wallet.json instead.
+  it("a malformed AGENTKV_PAYER_KEY → invalid_payer (USAGE), client not called", async () => {
+    const env = tmpEnv({
+      AGENTKV_ACCOUNT_KEY: AK,
+      AGENTKV_ENCRYPTION_KEY: ENC,
+      AGENTKV_PAYER_KEY: "0xnothex",
+    });
     try {
       const fundAccount = vi.fn();
       const io = makeIo();
-      const code = await runCli(["account", "fund", "5", "--from-key", "0xnothex"], {
+      const code = await runCli(["account", "fund", "5"], {
         client: { fundAccount } as any,
         env,
         stdout: io.stdout,
@@ -558,12 +604,16 @@ describe("account fund", () => {
   });
 
   it("non-whole / sub-$1 amounts → USAGE before touching the client", async () => {
-    const env = tmpEnv({ AGENTKV_ACCOUNT_KEY: AK, AGENTKV_ENCRYPTION_KEY: ENC });
+    const env = tmpEnv({
+      AGENTKV_ACCOUNT_KEY: AK,
+      AGENTKV_ENCRYPTION_KEY: ENC,
+      AGENTKV_PAYER_KEY: PAYER,
+    });
     try {
       const fundAccount = vi.fn();
       for (const amt of ["0.5", "1.5", "0", "abc"]) {
         const io = makeIo();
-        const code = await runCli(["account", "fund", amt, "--from-key", PAYER], {
+        const code = await runCli(["account", "fund", amt], {
           client: { fundAccount } as any,
           env,
           stdout: io.stdout,
@@ -585,9 +635,10 @@ describe("account fund", () => {
       AGENTKV_ACCOUNT_KEY: AK,
       AGENTKV_ENCRYPTION_KEY: ENC,
       AGENTKV_MAX_SPEND_USD: "5",
+      AGENTKV_PAYER_KEY: PAYER,
     });
     try {
-      const code = await runCli(["account", "fund", "50", "--from-key", PAYER], {
+      const code = await runCli(["account", "fund", "50"], {
         client: client as never,
         env,
         stdout: () => {},
@@ -609,9 +660,10 @@ describe("account fund", () => {
       AGENTKV_ACCOUNT_KEY: AK,
       AGENTKV_ENCRYPTION_KEY: ENC,
       AGENTKV_MAX_SPEND_USD: "5",
+      AGENTKV_PAYER_KEY: PAYER,
     });
     try {
-      const code = await runCli(["account", "fund", "5", "--from-key", PAYER], {
+      const code = await runCli(["account", "fund", "5"], {
         client: client as never,
         env,
         stdout: (s) => out.push(s),
@@ -632,9 +684,10 @@ describe("account fund", () => {
       AGENTKV_ACCOUNT_KEY: AK,
       AGENTKV_ENCRYPTION_KEY: ENC,
       AGENTKV_MAX_SESSION_SPEND_USD: "5",
+      AGENTKV_PAYER_KEY: PAYER,
     });
     try {
-      const code = await runCli(["account", "fund", "50", "--from-key", PAYER], {
+      const code = await runCli(["account", "fund", "50"], {
         client: client as never,
         env,
         stdout: () => {},
@@ -648,7 +701,7 @@ describe("account fund", () => {
     }
   });
 
-  it("account fund rejects an extra positional (a payer key typed without --from-key)", async () => {
+  it("account fund rejects an extra positional (a payer key typed on the command line)", async () => {
     const client = { fundAccount: vi.fn() };
     const err: string[] = [];
     const env = tmpEnv({
@@ -665,7 +718,7 @@ describe("account fund", () => {
       });
       expect(code).not.toBe(0);
       expect(client.fundAccount).not.toHaveBeenCalled();
-      expect(err.join("")).toMatch(/--from-key/);
+      expect(err.join("")).toMatch(/AGENTKV_PAYER_KEY/); // points at the env var, the only path
       expect(err.join("")).not.toContain(PAYER); // never echo key material
     } finally {
       clean(env);

@@ -24,7 +24,6 @@ const KNOWN_FLAGS = new Set([
   "reveal",
   "out",
   "file",
-  "from-key",
   "from-env",
   "cursor",
   "limit",
@@ -33,13 +32,34 @@ const KNOWN_FLAGS = new Set([
   "onramp-provider",
 ]);
 
-export function parseFlags(args: string[]): { flags: Record<string, any>; positionals: string[] } {
+// Flags that once existed and were REMOVED, mapped to the migration to print instead.
+// Checked BEFORE the KNOWN_FLAGS test so a removed flag fails with the replacement rather
+// than a bare `unknown flag --from-key`, which reads like a typo and leaves an operator
+// with a working script guessing at what to do. The message is a fixed string and the
+// flag's VALUE is never read or echoed — `--from-key`'s value WAS a wallet private key.
+const REMOVED_FLAGS = new Map([
+  [
+    "from-key",
+    "--from-key was removed: a private key passed as an argument is readable by other " +
+      "processes (`ps`, /proc/<pid>/cmdline) and is written to shell history. Pass the payer " +
+      "key in the environment instead: `AGENTKV_PAYER_KEY=0x… agentkv account fund <usd>`",
+  ],
+]);
+
+export function parseFlags(args: string[]): {
+  flags: Record<string, any>;
+  positionals: string[];
+} {
   const flags: Record<string, any> = {};
   const positionals: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
       const key = a.slice(2);
+      const removed = REMOVED_FLAGS.get(key);
+      if (removed) {
+        throw new UsageError(removed);
+      }
       if (!KNOWN_FLAGS.has(key)) {
         throw new UsageError(`unknown flag --${key}`);
       }

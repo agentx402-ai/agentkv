@@ -16,27 +16,23 @@ const PAYER_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
 /**
  * Resolve the PAYER private key that funds an account deposit, deliberately
  * INDEPENDENT of the configured account (the owner). Precedence:
- *   --from-key <0xhex>  >  AGENTKV_PAYER_KEY  >  AGENTKV_PRIVATE_KEY  >  wallet.json
+ *   AGENTKV_PAYER_KEY  >  AGENTKV_PRIVATE_KEY  >  wallet.json
+ * There is deliberately NO flag for this: argv is readable by other processes
+ * (`ps`, /proc/<pid>/cmdline) and is written to shell history, so key material
+ * only ever arrives via the environment or the local keystore.
  * The first NON-EMPTY source is authoritative: if it is malformed we THROW rather
  * than silently fall through to a different wallet (a typo'd payer key must not
  * quietly spend from wallet.json). The stored wallet is used ONLY if it already
  * exists — funding never auto-provisions a (brand-new, empty) wallet. Returns
  * undefined when no payer is resolvable. The raw key is never logged.
  */
-function resolvePayerKey(
-  flags: Record<string, unknown>,
-  env: NodeJS.ProcessEnv,
-): `0x${string}` | undefined {
-  const explicit =
-    (typeof flags.fromKey === "string" ? flags.fromKey.trim() : "") ||
-    env.AGENTKV_PAYER_KEY?.trim() ||
-    env.AGENTKV_PRIVATE_KEY?.trim() ||
-    "";
+function resolvePayerKey(env: NodeJS.ProcessEnv): `0x${string}` | undefined {
+  const explicit = env.AGENTKV_PAYER_KEY?.trim() || env.AGENTKV_PRIVATE_KEY?.trim() || "";
   if (explicit) {
     if (!PAYER_KEY_RE.test(explicit)) {
       throw new Error(
         "payer key must be a 0x-prefixed 32-byte hex private key " +
-          "(from --from-key / AGENTKV_PAYER_KEY / AGENTKV_PRIVATE_KEY)",
+          "(from AGENTKV_PAYER_KEY / AGENTKV_PRIVATE_KEY)",
       );
     }
     return explicit as `0x${string}`;
@@ -205,7 +201,7 @@ export async function runAccount(
   }
 
   if (sub === "fund") {
-    // `agentkv account fund <usd> [--from-key <0xhex>]` — "payer funds, bearer owns":
+    // `agentkv account fund <usd>` — "payer funds, bearer owns":
     // add prepaid credits to the CONFIGURED account (env AGENTKV_ACCOUNT_KEY > file)
     // by paying via x402 from a SEPARATE payer wallet. The account is the owner; the
     // payer just settles the on-chain deposit. Both are resolved independently.
@@ -222,16 +218,16 @@ export async function runAccount(
       return EXIT.USAGE;
     }
 
-    // A payer key typed WITHOUT --from-key was silently discarded, and the AMBIENT payer
-    // (AGENTKV_PAYER_KEY / AGENTKV_PRIVATE_KEY) signed the real-USDC payment instead —
+    // A payer key typed as a positional is silently discarded, and the AMBIENT payer
+    // (AGENTKV_PAYER_KEY / AGENTKV_PRIVATE_KEY) would sign the real-USDC payment instead —
     // a different wallet than the operator named on the command line. Never echo the
     // argument: it may BE the private key.
     if (positionals.length > 2) {
       printError(
         io.stderr,
         "usage",
-        "unexpected extra argument after 'account fund <usd>' — pass a payer key as " +
-          "--from-key <0xhex> (or via AGENTKV_PAYER_KEY), not as a positional",
+        "unexpected extra argument after 'account fund <usd>' — a payer key is never passed " +
+          "on the command line; set AGENTKV_PAYER_KEY in the environment instead",
       );
       return EXIT.USAGE;
     }
@@ -283,7 +279,7 @@ export async function runAccount(
     // 3) Payer wallet (independent of the account). Malformed explicit key -> USAGE.
     let payerKey: `0x${string}` | undefined;
     try {
-      payerKey = resolvePayerKey(flags, env);
+      payerKey = resolvePayerKey(env);
     } catch (e) {
       printError(io.stderr, "invalid_payer", e instanceof Error ? e.message : String(e));
       return EXIT.USAGE;
@@ -292,7 +288,7 @@ export async function runAccount(
       printError(
         io.stderr,
         "no_payer",
-        "no payer wallet; pass --from-key <0xhex> or set AGENTKV_PAYER_KEY (or AGENTKV_PRIVATE_KEY)",
+        "no payer wallet; set AGENTKV_PAYER_KEY (or AGENTKV_PRIVATE_KEY) in the environment",
       );
       return EXIT.GENERIC;
     }
@@ -334,7 +330,7 @@ export async function runAccount(
   printError(
     io.stderr,
     "usage",
-    "account new | account show [--reveal] | account fund <usd> [--from-key <0xhex>]",
+    "account new | account show [--reveal] | account fund <usd>  (payer key via AGENTKV_PAYER_KEY)",
   );
   return EXIT.USAGE;
 }

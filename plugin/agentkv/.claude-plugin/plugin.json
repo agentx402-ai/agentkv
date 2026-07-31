@@ -16,6 +16,13 @@
       "sensitive": true,
       "required": false
     },
+    "account_key": {
+      "type": "string",
+      "title": "Account key (optional)",
+      "description": "An ak_ bearer token for managed-wallet (credit) mode — for a paying wallet that cannot sign (e.g. awal). Mint one with `agentkv account new`, then fund it with a deposit of at least $1. Requires the encryption key below. Mutually exclusive with a wallet key.",
+      "sensitive": true,
+      "required": false
+    },
     "endpoint": {
       "type": "string",
       "title": "AgentKV endpoint",
@@ -32,8 +39,8 @@
     },
     "encryption_key": {
       "type": "string",
-      "title": "Encryption key (optional, advanced)",
-      "description": "Override the AES-256-GCM key (hex). Defaults to a key derived (HKDF) from the private key.",
+      "title": "Encryption key (advanced)",
+      "description": "The AES-256-GCM key (hex). Required with an account key — a managed account has no wallet to derive one from. In wallet mode it is an optional override; the default is derived (HKDF) from the private key.",
       "sensitive": true,
       "required": false
     },

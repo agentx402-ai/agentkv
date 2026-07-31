@@ -69,10 +69,15 @@ The card onramp is **Base mainnet only** — `agentkv fund` errors on a testnet 
 
 ## Configuration
 
-Secrets come from the environment only — never the config file. The one exception is the
-opt-in payer key for `agentkv account fund <usd> --from-key <0xhex>` (fund a decoupled account
-from a wallet other than the configured one); prefer `AGENTKV_PAYER_KEY` to keep the key out of
-shell history / `ps` argv.
+Secrets come from the environment or the local keystore only — never from a CLI flag and never
+from the config file. Command-line arguments are readable by other processes (`ps`,
+`/proc/<pid>/cmdline`) and are written to shell history, so no command takes a key as an
+argument. To fund a decoupled account from a wallet other than the configured one, put that
+payer key in `AGENTKV_PAYER_KEY`:
+
+```bash
+AGENTKV_PAYER_KEY=0x… agentkv account fund 5
+```
 
 Non-secret defaults set via `agentkv config` persist to `~/.agentkv/config.json`, which is read
 before it's rewritten, so a corrupted file can't be auto-repaired — `agentkv config` fails with
@@ -83,6 +88,7 @@ to persist your settings again.
 |----------|-------------|
 | `AGENTKV_PRIVATE_KEY` | Wallet key (hex). Unset → a local wallet is auto-provisioned on first use. |
 | `AGENTKV_ACCOUNT_KEY` | `ak_…` bearer token — selects account-key mode. |
+| `AGENTKV_PAYER_KEY` | Wallet key (hex) that pays for `agentkv account fund <usd>`, independent of the configured account. Falls back to `AGENTKV_PRIVATE_KEY`, then the stored wallet. |
 | `AGENTKV_ENCRYPTION_KEY` | Local AES key (hex). **Required** with `AGENTKV_ACCOUNT_KEY`; optional override in wallet mode (defaults to HKDF from the wallet key). |
 | `AGENTKV_ENDPOINT` | Worker URL; defaults to `https://api.agentx402.ai`. |
 | `AGENTKV_NETWORK` | `eip155:8453` (Base mainnet, default) or `eip155:84532` (Base Sepolia). |
