@@ -9,7 +9,7 @@
 // codes. Mirrors `@agentscout/client`'s `errors.ts` — the two service clients are
 // deliberately structured alike.
 
-import { AgentKVError, AgentXError, SpendCapError } from "@agentx402-ai/core";
+import { AgentKVError, AgentXError, parseErrorBody, SpendCapError } from "@agentx402-ai/core";
 
 // RE-EXPORT core's base + spend-cap error — never re-declare them, or cross-package
 // `instanceof` breaks (two distinct class objects in node_modules). `AgentKVError` is
@@ -119,20 +119,8 @@ export function kvErrorFromResponse(
   bodyText: string,
   fallback: string,
 ): AgentKVServiceError {
-  let detail = fallback;
-  let code = "request_failed";
-  let hint: string | undefined;
-  try {
-    const body = JSON.parse(bodyText) as { error?: unknown; code?: unknown; hint?: unknown };
-    // typeof-guarded because the body is UNTRUSTED input: a JSON.parse cast asserts nothing at
-    // runtime. A non-string `code` would silently break every `e.code === "…"` comparison
-    // callers dispatch on, and a non-string `hint` would reach the CLI's stderr as
-    // "[object Object]". Anything not a non-empty string falls back to the defaults above.
-    if (typeof body?.error === "string" && body.error) detail = body.error;
-    if (typeof body?.code === "string" && body.code) code = body.code;
-    if (typeof body?.hint === "string" && body.hint) hint = body.hint;
-  } catch {
-    /* non-JSON body — keep fallback + request_failed */
-  }
+  // Parsing (including the type-checks on an untrusted body) is shared via core; only the
+  // error CLASS is this SDK's, because that identity is what callers `instanceof`.
+  const { detail, code, hint } = parseErrorBody(bodyText, fallback);
   return new AgentKVServiceError(`AgentKV ${status}: ${detail}`, code, status, hint);
 }

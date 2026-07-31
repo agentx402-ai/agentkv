@@ -1,7 +1,7 @@
 // client/src/index.ts
 export const VERSION = "0.3.1";
 
-import { fetchWithRetry } from "@agentx402-ai/core";
+import { assertFiniteUsd, fetchWithRetry, SpendLedger } from "@agentx402-ai/core";
 import { getAddress, hexToBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { isAccountKeyFormat } from "./account";
@@ -153,15 +153,11 @@ export function toWholeAtomicUsd(amountUsd: number): number | null {
  * NaN-capped client also skipped the built-in DEFAULT_MAX_OP_USD ceiling and would sign
  * a spoofed $1000 quote that an UNCONFIGURED client rejects.
  */
+// Delegates the RULE to core (which raises AgentXError — the very class `AgentKVError` aliases,
+// so an existing `instanceof AgentKVError` still matches) and keeps returning the value, since
+// the call sites assign the validated cap straight through.
 function assertCapOption(v: number | undefined, name: string): number | undefined {
-  if (v === undefined) return undefined;
-  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-    throw new AgentKVError(
-      `${name} must be a finite number >= 0 (omit it for no cap; got ${String(v)})`,
-      "invalid_config",
-      0,
-    );
-  }
+  assertFiniteUsd(v, name);
   return v;
 }
 
@@ -192,16 +188,26 @@ export class AgentKV {
   private _ikm?: Uint8Array;
   private _km?: KeyMaterial;
   private _kmPromise?: Promise<KeyMaterial>;
-  private sessionSpentUsd = 0;
   /**
-   * USD authorized by ops that have passed the session-cap check but not yet settled.
-   * `recordSpend` only increments AFTER the paid round-trip, so without this, N concurrent
-   * ops all check against the same stale counter, all pass, and all sign real EIP-3009
-   * authorizations — the cumulative cap provided NO bound under concurrency. Reserved
-   * synchronously at the check (no await in between) and released when the op settles or
-   * fails; settled amounts move to `sessionSpentUsd` via `recordSpend`.
+   * The spend bounds, including the in-flight reservation that makes the cumulative cap hold
+   * under concurrency: settlement is only known after a paid round-trip, so a ledger counting
+   * only settled spend hands concurrent ops the same stale total and each one signs. Shared
+   * with the other service SDKs via core, which already owned the SpendCapError it raises —
+   * both repos had kept their own copy under different names, and both drifted.
    */
-  private sessionReservedUsd = 0;
+  private readonly ledger: SpendLedger;
+
+  // Read-only views onto the ledger, kept because the white-box spend-accounting tests read
+  // these names directly (`(kv as { sessionSpentUsd }).sessionSpentUsd`) to prove a top-off is
+  // counted exactly once and that an in-flight one is visible to a concurrent check. Reads
+  // only — the ledger owns every mutation.
+  private get sessionSpentUsd(): number {
+    return this.ledger.settled;
+  }
+
+  private get sessionReservedUsd(): number {
+    return this.ledger.inFlight;
+  }
 
   // --- Discounted Prepay state (opt-in; undefined => Pay-as-you-go, unchanged) ---
   private readonly prepay?: { watermark: number; topoff: number; async?: boolean };
@@ -256,6 +262,11 @@ export class AgentKV {
     this.network = opts.network ?? DEFAULT_NETWORK;
     this.maxSpendUsd = assertCapOption(opts.maxSpendUsd, "maxSpendUsd");
     this.maxSessionSpendUsd = assertCapOption(opts.maxSessionSpendUsd, "maxSessionSpendUsd");
+    // Caps validated just above, so the ledger's identical re-check never fires.
+    this.ledger = new SpendLedger({
+      maxSpendUsd: this.maxSpendUsd,
+      maxSessionSpendUsd: this.maxSessionSpendUsd,
+    });
     // retries: NaN would make the retry condition always-false (silently no retries) and
     // Infinity would survive the clamp (unbounded loop) — reject non-finite; negatives
     // still clamp to 0 as before.
@@ -534,28 +545,18 @@ export class AgentKV {
     return decrypt(km.value, packed, hashKey(km.mac, key));
   }
 
+  // The next four delegate to the shared ledger. They stay as named methods because their
+  // call sites and the white-box money tests already use these names; only the arithmetic
+  // moved to core, which already owned the SpendCapError they raise.
   private assertSpend(usd: number, opts: { bypassPerOpCap?: boolean } = {}): void {
-    // Top-offs pass bypassPerOpCap: a credit purchase is not a per-op charge, so
-    // the per-call cap (which bounds individual pay-per-op spend) must not gate it
-    // — mirroring topoffFitsSessionCap() on the synchronous top-off paths.
-    // Negated <= (not >): a non-finite operand then fails CLOSED instead of open.
-    if (!opts.bypassPerOpCap && this.maxSpendUsd !== undefined && !(usd <= this.maxSpendUsd)) {
-      throw new SpendCapError(`spend $${usd} exceeds per-call cap $${this.maxSpendUsd}`);
-    }
-    // Negated <= (not >): a non-finite operand then fails CLOSED instead of open.
-    if (
-      this.maxSessionSpendUsd !== undefined &&
-      !(this.sessionSpentUsd + this.sessionReservedUsd + usd <= this.maxSessionSpendUsd)
-    ) {
-      throw new SpendCapError(
-        `spend $${usd} would exceed session cap $${this.maxSessionSpendUsd} ` +
-          `(spent $${this.sessionSpentUsd}, in flight $${this.sessionReservedUsd})`,
-      );
-    }
+    // Top-offs pass bypassPerOpCap: a credit purchase is not a per-op charge, so the per-call
+    // cap (which bounds individual pay-per-op spend) must not gate it — mirroring
+    // topoffFitsSessionCap() on the synchronous top-off paths. The cumulative cap still binds.
+    this.ledger.assertSpend(usd, { bypassPerCallCap: opts.bypassPerOpCap });
   }
 
   private recordSpend(usd: number): void {
-    this.sessionSpentUsd += usd;
+    this.ledger.record(usd);
   }
 
   /**
@@ -564,17 +565,14 @@ export class AgentKV {
    * cannot leak budget back.
    */
   private reserveSession(usd: number): () => void {
-    this.sessionReservedUsd += usd;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.sessionReservedUsd -= usd;
-    };
+    return this.ledger.reserve(usd);
   }
 
   /** `assertSpend` + a synchronous reservation. The caller MUST release in a `finally`. */
   private assertAndReserveSpend(usd: number, opts: { bypassPerOpCap?: boolean } = {}): () => void {
+    // Kept as check-then-reserve through this class's own two methods rather than the ledger's
+    // combined call: nothing awaits between them, so it is equivalent, and it keeps one place
+    // where the bypass is translated for every caller of either method.
     this.assertSpend(usd, opts);
     return this.reserveSession(usd);
   }
