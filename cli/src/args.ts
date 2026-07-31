@@ -41,8 +41,10 @@ const REMOVED_FLAGS = new Map([
   [
     "from-key",
     "--from-key was removed: a private key passed as an argument is readable by other " +
-      "processes (`ps`, /proc/<pid>/cmdline) and is written to shell history. Pass the payer " +
-      "key in the environment instead: `AGENTKV_PAYER_KEY=0x… agentkv account fund <usd>`",
+      "processes (`ps`, /proc/<pid>/cmdline) and is written to shell history. Provide the payer " +
+      "key as AGENTKV_PAYER_KEY in the environment instead — via `export` from a shell profile " +
+      "or a secret-manager wrapper, NOT an inline `AGENTKV_PAYER_KEY=0x… agentkv …` prefix, " +
+      "which shell history records just the same. With none set, the local wallet keystore is used.",
   ],
 ]);
 

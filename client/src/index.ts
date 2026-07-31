@@ -912,8 +912,13 @@ export class AgentKV {
        * holds in the DEFAULT config, where the only other guard is the coarse DEFAULT_MAX_OP_USD
        * backstop (10x the real op price). Does NOT apply to the top-off branch, which
        * legitimately pays >= $1 for a credit purchase rather than this op's price.
+       *
+       * Required but nullable ON PURPOSE: a new verb must STATE its ceiling, so the decision is
+       * conscious, but may state `undefined` when no canonical price is pinned — which falls
+       * back to the DEFAULT_MAX_OP_USD backstop rather than forcing the author to invent a
+       * number. Writing a guessed ceiling here would be worse than declaring none.
        */
-      authorizedCeilingUsd: number;
+      authorizedCeilingUsd: number | undefined;
       label: string;
       buildRequest: (headers: Record<string, string>) => RequestInit;
       parseSuccess: (res: Response) => Promise<T>;
@@ -1160,17 +1165,24 @@ export class AgentKV {
         // A non-finite ceiling is a HARD refusal rather than a vacuous `usd > NaN` that always
         // passes. The value is a module constant today, so this only fires on a bug — but this
         // is the last gate before a signature, so it refuses rather than trusts.
-        if (!Number.isFinite(spec.authorizedCeilingUsd)) {
-          throw new SpendCapError(
-            `authorized ceiling $${spec.authorizedCeilingUsd} is not a finite amount; refusing to sign`,
-          );
+        if (spec.authorizedCeilingUsd !== undefined) {
+          if (!Number.isFinite(spec.authorizedCeilingUsd)) {
+            throw new SpendCapError(
+              `authorized ceiling $${spec.authorizedCeilingUsd} is not a finite amount; refusing to sign`,
+            );
+          }
+          if (!(usd <= spec.authorizedCeilingUsd + PRICE_EPS)) {
+            throw new SpendCapError(
+              `server quoted $${usd} but the client only authorized $${spec.authorizedCeilingUsd} ` +
+                "(the pinned op price); refusing to sign",
+            );
+          }
         }
-        if (!(usd <= spec.authorizedCeilingUsd + PRICE_EPS)) {
-          throw new SpendCapError(
-            `server quoted $${usd} but the client only authorized $${spec.authorizedCeilingUsd} ` +
-              "(the pinned op price); refusing to sign",
-          );
-        }
+        // Backstop, and the ONLY op-price bound for a verb that declares no ceiling. For today's
+        // two verbs it cannot bind: both pinned ceilings ($0.003/$0.005) are an order of magnitude
+        // under DEFAULT_MAX_OP_USD ($0.05), so the check above always refuses first. Kept because
+        // it is what a future `authorizedCeilingUsd: undefined` verb falls back to — and
+        // DEFAULT_MAX_OP_USD stays live regardless on the inline-payer path (inlineOpCeilingUsd).
         this.assertOpPriceCeiling(usd);
         release = this.assertAndReserveSpend(usd);
       }

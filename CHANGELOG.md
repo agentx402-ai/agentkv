@@ -6,6 +6,45 @@ All notable changes to AgentKV are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING — `@agentkv/cli`: the `--from-key` flag is gone.** A private key passed as an
+  argument is readable by other processes (`ps`, `/proc/<pid>/cmdline`) and is written to shell
+  history. Supply the payer key as `AGENTKV_PAYER_KEY` in the environment instead — exported from
+  a shell profile or a secret-manager wrapper, not as an inline `VAR=… agentkv …` prefix, which
+  shell history records just the same. With none set, the local wallet keystore is used. The flag
+  now fails with that migration rather than a bare "unknown flag", and its value is never read.
+
+### Added
+
+- **`@agentkv/client`: a per-op authorized ceiling on wallet (x402) payments.** Each paying verb
+  pins the price it authorizes — `X402_READ_USD` ($0.003) and `X402_WRITE_USD` ($0.005), mirroring
+  the service's canonical atomic prices — and a `402` quoting more is refused **before** any
+  EIP-3009 authorization is signed. Previously the only bound in the default configuration was the
+  coarse `DEFAULT_MAX_OP_USD` backstop, so a spoofed or intercepted challenge quoting $0.04 for a
+  routine $0.005 write was signed. Prepay top-offs are exempt by design (they buy ≥$1 of credit,
+  not this op's price). Because the pin is a **ceiling**, a price *increase* must reach clients
+  before the service quotes it.
+- **`@agentkv/client`: a typed error surface.** `AgentKVServiceError` (carrying the service's
+  `hint`), the `AgentKVErrorCode` union, and the shared `kvErrorFromResponse` mapper are now
+  exported. `AgentKVError` keeps its existing identity, so `instanceof` is unaffected.
+
+### Fixed
+
+- **The service's `hint` is no longer discarded.** The response mapper read only `error` and
+  `code`. The service deliberately puts the generic text in `error` and the actionable detail in
+  `hint`, so callers saw only the canned string — while a publicly exported `ErrorBody` advertised
+  a `hint` nothing populated. It now reaches the SDK, the CLI and the MCP surface, and untrusted
+  response fields are type-checked before use.
+- **Releases verify the published artifact is complete.** The CLI bundle is code-split into
+  hash-named chunks; the release checked only five fixed files, so a dropped or zeroed chunk would
+  have published a CLI that fails on first run and could only be fixed by a new version. The check
+  now walks the import graph. The release-time version guard also covers the plugin runtime pin
+  (the sixth source it skipped), a half-published release can be completed by re-running, and an
+  empty tag argument no longer downgrades the version check.
+- **The plugin passes the account key through.** The manifest collected it in a sensitive field
+  and never handed it to the server, so account-key mode could not be configured from the plugin.
+
 ## [0.3.1] — 2026-07-30
 
 ### Changed

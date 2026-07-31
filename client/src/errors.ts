@@ -123,10 +123,14 @@ export function kvErrorFromResponse(
   let code = "request_failed";
   let hint: string | undefined;
   try {
-    const body = JSON.parse(bodyText) as { error?: string; code?: string; hint?: string };
-    if (body?.error) detail = body.error;
-    if (body?.code) code = body.code;
-    if (body?.hint) hint = body.hint;
+    const body = JSON.parse(bodyText) as { error?: unknown; code?: unknown; hint?: unknown };
+    // typeof-guarded because the body is UNTRUSTED input: a JSON.parse cast asserts nothing at
+    // runtime. A non-string `code` would silently break every `e.code === "…"` comparison
+    // callers dispatch on, and a non-string `hint` would reach the CLI's stderr as
+    // "[object Object]". Anything not a non-empty string falls back to the defaults above.
+    if (typeof body?.error === "string" && body.error) detail = body.error;
+    if (typeof body?.code === "string" && body.code) code = body.code;
+    if (typeof body?.hint === "string" && body.hint) hint = body.hint;
   } catch {
     /* non-JSON body — keep fallback + request_failed */
   }

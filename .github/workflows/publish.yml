@@ -292,6 +292,12 @@ jobs:
           // that dies with ERR_MODULE_NOT_FOUND on its first run, and only a new version
           // could fix it. (Scope: this catches missing/empty, not a partially written file —
           // download-artifact v8 fails on digest mismatch, which does.)
+          //
+          // TWO ASSUMPTIONS, true of tsup's output today and worth re-checking if it changes:
+          // only .js/.cjs are walked, so a SPLIT .d.ts graph would go unverified (dts bundling
+          // emits one file per entry today); and a resolved specifier is used verbatim, so an
+          // extensionless relative import would be reported missing (esbuild always emits the
+          // extension).
           const seen = new Set();
           const queue = entries.filter((f) => /\.c?js$/.test(f));
           while (queue.length) {
