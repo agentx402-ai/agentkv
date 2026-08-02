@@ -79,9 +79,9 @@ agentkv account new                         # mints ak_… + a local encryption 
 agentkv account show                        # status + balance; --reveal prints the raw secrets
 
 # No-hook fallback: fund the account manually with a real ≥$1 deposit from ANY signing
-# wallet to <endpoint>/account/deposit, authorized by the account's bearer token (creates
+# wallet to <endpoint>/v1/account/deposit, authorized by the account's bearer token (creates
 # the account on the first deposit):
-awal x402 pay https://api.agentx402.ai/account/deposit --headers '{"Authorization":"Bearer ak_..."}'
+awal x402 pay https://api.agentx402.ai/v1/account/deposit --headers '{"Authorization":"Bearer ak_..."}'
 
 # Then read/write over just the bearer (encrypted client-side, zero-knowledge to the server):
 export AGENTKV_ACCOUNT_KEY=ak_...  AGENTKV_ENCRYPTION_KEY=0x...

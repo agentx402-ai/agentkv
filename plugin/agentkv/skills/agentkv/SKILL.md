@@ -108,7 +108,7 @@ the CLI mints and funds an account:
 ```bash
 agentkv account new        # mint ak_… + a local encryption key (saved 0600) — BACK THEM UP, unrecoverable
 # Fund it from ANY signing wallet (a real ≥$1 deposit creates the account on the first deposit):
-awal x402 pay https://api.agentx402.ai/account/deposit --headers '{"Authorization":"Bearer ak_..."}'
+awal x402 pay https://api.agentx402.ai/v1/account/deposit --headers '{"Authorization":"Bearer ak_..."}'
 ```
 
 Then set `AGENTKV_ACCOUNT_KEY=ak_…` and `AGENTKV_ENCRYPTION_KEY=0x…` (the local AES key — required

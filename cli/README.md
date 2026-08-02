@@ -32,7 +32,7 @@ agentkv account new        # mint ak_… + a local encryption key (saved 0600) �
 agentkv account show       # status + credit balance; pass --reveal to print the raw secrets
 
 # Fund it from ANY signing wallet (a real ≥$1 deposit creates the account on first deposit):
-awal x402 pay https://api.agentx402.ai/account/deposit --headers '{"Authorization":"Bearer ak_..."}'
+awal x402 pay https://api.agentx402.ai/v1/account/deposit --headers '{"Authorization":"Bearer ak_..."}'
 
 # Then use the account over just the bearer (no wallet, no signing):
 export AGENTKV_ACCOUNT_KEY=ak_...  AGENTKV_ENCRYPTION_KEY=0x...
