@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import { AgentKVError, AgentKVServiceError, SpendCapError } from "@agentkv/client";
 import { parseFlags, UsageError } from "./args";
 import { runAccount } from "./commands/account";
-import { runCredits } from "./commands/credits";
+import { parseDepositArgs, runCredits } from "./commands/credits";
 import { runFund } from "./commands/fund";
-import { runKv, runListKeys } from "./commands/kv";
+import { type ParsedKv, parseKvArgs, runKv, runListKeys } from "./commands/kv";
 import { runWallet } from "./commands/wallet";
 import { clientFromConfig, readConfigFile, resolveConfig } from "./config";
 import { agentkvDir } from "./keystore";
@@ -76,13 +76,22 @@ export async function runCli(argv: string[], deps: Deps = {}): Promise<number> {
       // the account is env-only. Do NOT build one via clientFromConfig here: with
       // AGENTKV_PRIVATE_KEY set it can hand back a WALLET-mode client (wrong namespace).
       // Only an explicitly injected client (tests) is passed through.
-      return await runAccount(rest, { client: deps.client, stdout, stderr, env });
+      return await runAccount(rest, {
+        client: deps.client,
+        stdout,
+        stderr,
+        env,
+      });
     }
     if (cmd === "mcp") {
       // Handle mcp BEFORE building a client — startMcp builds its own (with the stderr
       // notify). Building one here would do the config/keystore work twice and discard it.
       const { startMcp } = await import("./mcp.js");
-      await startMcp({ env: deps.env, client: deps.client, stderr: deps.stderr });
+      await startMcp({
+        env: deps.env,
+        client: deps.client,
+        stderr: deps.stderr,
+      });
       return EXIT.OK;
     }
     // Only these commands need a client. Dispatch on cmd FIRST so an unknown/typo'd command
@@ -98,6 +107,24 @@ export async function runCli(argv: string[], deps: Deps = {}): Promise<number> {
       );
       return EXIT.USAGE;
     }
+    // Validate the command's OWN arguments (required <key>, delete's disallowed-flag check,
+    // set's value resolution, deposit's <usd> range) BEFORE the client construction below —
+    // clientFromConfig mints and persists a wallet on first use (config.ts), so a usage error
+    // must never get that far. parseKvArgs/parseDepositArgs are the SAME checks runKv/
+    // runCredits use (parseKvArgs's result is threaded through rather than re-derived — see
+    // its doc comment), so there is one source of truth for what counts as valid. list-keys/
+    // balance need no command-specific check here: a malformed --limit/--cursor is already
+    // rejected by the parseFlags(rest) call below (used for config resolution), which runs
+    // before clientFromConfig regardless.
+    let parsedKv: Extract<ParsedKv, { ok: true }> | undefined;
+    if (cmd === "set" || cmd === "get" || cmd === "delete") {
+      const parsed = parseKvArgs(cmd, rest);
+      if (!parsed.ok) return usageFail(stderr, parsed.code, parsed.message, parsed.hint);
+      parsedKv = parsed;
+    } else if (cmd === "deposit") {
+      const parsed = parseDepositArgs(rest);
+      if (!parsed.ok) return usageFail(stderr, "usage", parsed.message);
+    }
     const client =
       deps.client ??
       clientFromConfig(
@@ -108,14 +135,19 @@ export async function runCli(argv: string[], deps: Deps = {}): Promise<number> {
           notify: (m) => stderr(`agentkv: ${m}\n`),
         },
       );
-    if (cmd === "set" || cmd === "get" || cmd === "delete")
-      return await runKv(cmd, rest, { client, stdout, stderr });
+    if (parsedKv) return await runKv(parsedKv, { client, stdout, stderr });
     if (cmd === "list-keys") return await runListKeys(rest, { client, stdout, stderr });
     // balance | deposit
     return await runCredits(cmd, rest, { client, stdout, stderr });
   } catch (e) {
     return mapError(e, stderr);
   }
+}
+
+/** Print a usage error in the same shape mapError gives UsageError, and return EXIT.USAGE. */
+function usageFail(stderr: Writer, code: string, message: string, hint?: string): number {
+  printError(stderr, code, message, hint);
+  return EXIT.USAGE;
 }
 
 function mapError(e: unknown, stderr: Writer): number {
