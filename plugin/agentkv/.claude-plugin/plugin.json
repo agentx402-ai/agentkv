@@ -1,7 +1,7 @@
 {
   "name": "agentkv",
-  "version": "0.4.0",
-  "description": "AgentKV: encrypted, x402-paid persistent memory for agents. Stores values client-side encrypted (AES-256-GCM) so the server is zero-knowledge. Wallet address is the namespace — no accounts or API keys needed.",
+  "version": "0.4.1",
+  "description": "AgentKV: encrypted, x402-paid persistent memory for agents. Stores values client-side encrypted (AES-256-GCM) so the server is zero-knowledge. Wallet address is the namespace \u2014 no accounts or API keys needed.",
   "license": "MIT",
   "author": {
     "name": "The AgentKV Authors",
@@ -19,7 +19,7 @@
     "account_key": {
       "type": "string",
       "title": "Account key (optional)",
-      "description": "An ak_ bearer token for managed-wallet (credit) mode — for a paying wallet that cannot sign (e.g. awal). Mint one with `agentkv account new`, then fund it with a deposit of at least $1. Requires the encryption key below. Mutually exclusive with a wallet key.",
+      "description": "An ak_ bearer token for managed-wallet (credit) mode \u2014 for a paying wallet that cannot sign (e.g. awal). Mint one with `agentkv account new`, then fund it with a deposit of at least $1. Requires the encryption key below. Mutually exclusive with a wallet key.",
       "sensitive": true,
       "required": false
     },
@@ -40,7 +40,7 @@
     "encryption_key": {
       "type": "string",
       "title": "Encryption key (advanced)",
-      "description": "The AES-256-GCM key (hex). Required with an account key — a managed account has no wallet to derive one from. In wallet mode it is an optional override; the default is derived (HKDF) from the private key.",
+      "description": "The AES-256-GCM key (hex). Required with an account key \u2014 a managed account has no wallet to derive one from. In wallet mode it is an optional override; the default is derived (HKDF) from the private key.",
       "sensitive": true,
       "required": false
     },
