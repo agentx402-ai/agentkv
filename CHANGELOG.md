@@ -4,6 +4,24 @@ All notable changes to AgentKV are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] — 2026-08-08
+
+### Changed
+
+- **`client`'s `@agentx402-ai/core` range widens to `^0.4.0`.** Core 0.4.0 added two optional
+  `UsageBlock` fields — `breakdown` (composite-op itemization) and `expiring_soon` (a
+  collection-lifetime signal) — and a caret on a 0.x version pins the *minor*, so `^0.3.0` does
+  not admit 0.4.0: installing `@agentkv/client` kept resolving core 0.3.0 even after core shipped.
+  This is a consistency move, not a fix — the AgentKV worker emits **neither** field (`breakdown`
+  is for composite ops, like an AgentRAG `ask` that also ingests; `expiring_soon` is an AgentRAG
+  collection-lifetime signal), so no AgentKV response ever populated them and no AgentKV user was
+  missing data they should have had. The sibling AgentRAG and AgentScout clients move to `^0.4.0`
+  because their services genuinely emit these fields; AgentKV moves alongside them so all three
+  share one core floor and a cross-repo version-parity check stays green.
+
+No other runtime behavior or public API of `@agentkv/client` or `@agentkv/cli` changes in this
+release.
+
 ## [0.4.1] — 2026-08-08
 
 Two user-facing fixes that have been on `main` since #25 and #26 but never reached npm — `v0.4.0`
