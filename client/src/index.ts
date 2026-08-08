@@ -1,5 +1,5 @@
 // client/src/index.ts
-export const VERSION = "0.4.1";
+export const VERSION = "0.4.2";
 
 import { assertFiniteUsd, fetchWithRetry, SpendLedger } from "@agentx402-ai/core";
 import { getAddress, hexToBytes } from "viem";
