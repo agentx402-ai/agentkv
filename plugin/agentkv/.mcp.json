@@ -2,7 +2,7 @@
   "mcpServers": {
     "agentkv": {
       "command": "npx",
-      "args": ["-y", "@agentkv/cli@0.4.0", "mcp"],
+      "args": ["-y", "@agentkv/cli@0.4.1", "mcp"],
       "env": {
         "AGENTKV_ENDPOINT": "${user_config.endpoint:-}",
         "AGENTKV_PRIVATE_KEY": "${user_config.private_key:-}",

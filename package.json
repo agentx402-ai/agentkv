@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Open-source clients for AgentKV — an agent-native, x402-paid, zero-knowledge encrypted key-value store. The wallet address is the namespace; no accounts or API keys.",
+  "description": "Open-source clients for AgentKV \u2014 an agent-native, x402-paid, zero-knowledge encrypted key-value store. The wallet address is the namespace; no accounts or API keys.",
   "author": "The AgentKV Authors <contact@agentx402.ai>",
   "homepage": "https://github.com/agentx402-ai/agentkv#readme",
   "repository": {
@@ -30,7 +30,10 @@
     "format": "biome check --write ."
   },
   "overrides": {
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "fast-uri": "^3.1.5",
+    "hono": "^4.13.0",
+    "ip-address": "^10.4.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.6",

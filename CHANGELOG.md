@@ -4,6 +4,37 @@ All notable changes to AgentKV are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] — 2026-08-08
+
+Two user-facing fixes that have been on `main` since #25 and #26 but never reached npm — `v0.4.0`
+was tagged before both.
+
+### Fixed
+
+- **The documented way to fund an account-key namespace pointed at a URL that 404s.** `README.md`,
+  the CLI's npm page, and the plugin skill all showed
+  `awal x402 pay https://api.agentx402.ai/account/deposit` — missing the `/v1` prefix. That path
+  returns 404; `https://api.agentx402.ai/v1/account/deposit` returns the payment challenge it
+  should. Anyone in account-key mode following the instructions could not complete the one step
+  that lets them pay for anything.
+
+  Documentation only — the runtime was never wrong. The SDK builds this URL through `route()`,
+  which prepends `V1`, and `cli/src/awal.ts` deliberately strips an optional leading `/v1` before
+  its non-deposit-route guard so it accepts both shapes.
+
+- **A usage error no longer mints a wallet.** A valid command with a missing or invalid required
+  argument created and persisted `~/.agentkv/wallet.json` *before* reporting the error, so
+  `agentkv get` with no key answered a typo with `created a new wallet 0x… Fund it, then retry` —
+  pointing you at spending money to fix a missing argument, and leaving a private key on disk as a
+  side effect of a mistake. Affected `get`, `set` (missing key, or an unresolvable value), `delete`
+  (missing key, or a disallowed flag), and `deposit` (missing, below-minimum, or non-numeric
+  amount). Each command now validates its own arguments before anything can touch the keystore.
+
+  No wallet is lost by upgrading: the mint was reused on later runs, so this only stops the
+  *unwanted* one. The deliberate first-run mint on a genuinely valid command is unchanged, and
+  `agentkv set key < value.json` still reads stdin correctly — that path is a one-shot stream, so
+  the validation deliberately parses it once rather than twice.
+
 ## [0.4.0] — 2026-07-31
 
 ### Removed
