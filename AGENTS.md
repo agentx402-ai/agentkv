@@ -30,6 +30,14 @@ npm run format         # biome check --write .
 npm --workspace client test -- account-topoff   # one file, vitest filename filter
 ```
 
+**Run `build` before `typecheck`, not after.** `client/package.json` points `types` at
+`./dist/index.d.ts`, so `cli`'s typecheck resolves `@agentkv/client` through the BUILT
+client, not its source. Typechecking straight after editing `client/src` therefore reports
+`Cannot find module '@agentkv/client'` — a false failure that points at the import rather than
+at anything actually wrong. `npm test` is safe on its own (a `pretest` builds the client
+first); a standalone `npm run typecheck` is not. CI only ever runs build-then-test, which is
+why this never fires there. Working order: `lint`, `build`, `typecheck`, `test`.
+
 Git hooks come from `.githooks/` (wired by `npm ci` via `core.hooksPath`).
 
 ## Conventions
