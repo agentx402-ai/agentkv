@@ -49,7 +49,7 @@ function challengeHeader(amountAtomic: string): string {
         {
           scheme: "exact",
           network: NETWORK,
-          asset: asset.address,
+          asset: asset.asset,
           amount: amountAtomic,
           payTo: PAYTO,
           maxTimeoutSeconds: 600,
@@ -84,7 +84,7 @@ async function verifyPayment(paymentSignatureHeader: string, wantAmount: string)
       name: asset.name,
       version: asset.version,
       chainId: CHAIN_ID,
-      verifyingContract: getAddress(asset.address),
+      verifyingContract: getAddress(asset.asset),
     },
     types: TRANSFER_WITH_AUTHORIZATION_TYPES,
     primaryType: "TransferWithAuthorization",
