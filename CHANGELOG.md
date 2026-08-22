@@ -4,6 +4,16 @@ All notable changes to AgentKV are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] — 2026-08-22
+
+### Changed
+
+- Adopt `@agentx402-ai/core` `^0.4.1` and take `@x402/core` + `@x402/evm` to 2.23.0 (the
+  registry field rename `address` → `asset`, handled internally by core). The SDK does not use
+  the renamed field directly; two test fixtures that build/verify EIP-3009 challenges via
+  `getDefaultAsset(...)` were updated to `.asset` (same canonical-USDC value). No public API or
+  behavior change. Also refreshes `viem` to 2.55.19 and `@biomejs/biome` to 2.5.10.
+
 ## [0.4.2] — 2026-08-08
 
 ### Changed
