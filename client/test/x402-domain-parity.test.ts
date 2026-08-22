@@ -33,11 +33,12 @@ const EXPECTED = {
 } as const;
 
 describe("x402 USDC asset + EIP-712 domain parity (matches the backend pin)", () => {
-  it("getDefaultAsset(network).{address,name,version} match the pinned cross-repo values", () => {
+  it("getDefaultAsset(network).{asset,name,version} match the pinned cross-repo values", () => {
     for (const network of Object.keys(EXPECTED) as (keyof typeof EXPECTED)[]) {
       const asset = getDefaultAsset(network);
       const want = EXPECTED[network];
-      expect(asset.address.toLowerCase()).toBe(want.address.toLowerCase());
+      // @x402/evm >= 2.23.0 renamed the token-address field `address` -> `asset`.
+      expect(asset.asset.toLowerCase()).toBe(want.address.toLowerCase());
       expect(asset.name).toBe(want.name);
       expect(asset.version).toBe(want.version);
     }
