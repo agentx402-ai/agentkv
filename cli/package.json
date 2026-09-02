@@ -44,7 +44,7 @@
   "dependencies": {
     "@agentkv/client": "^0.4.3",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "viem": "^2.55.10",
+    "viem": "^2.56.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
