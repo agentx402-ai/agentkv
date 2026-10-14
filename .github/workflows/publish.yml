@@ -183,7 +183,7 @@ jobs:
       # The ONLY thing that crosses the privilege boundary. Everything else the tarballs need
       # (package.json, README.md, LICENSE) is already in the publish job's checkout of the
       # same tag; `files: ["dist"]` in both manifests means dist is the whole delta.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           # Two paths, so the artifact keeps the `client/`+`cli/` prefixes (upload-artifact
