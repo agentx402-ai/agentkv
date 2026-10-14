@@ -105,7 +105,7 @@ jobs:
           ref: ${{ steps.resolve.outputs.ref }}
           # Don't leave the job token in .git/config where a build step could reach it.
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           # Node 24 bundles npm >= 11.5.1 (required for OIDC trusted publishing)
           # NATIVELY. Do not reintroduce `npm install -g npm@latest`: npm
@@ -223,7 +223,7 @@ jobs:
         with:
           ref: ${{ needs.build.outputs.ref }}
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           # registry-url IS required — without it npm has no registry configured for the
